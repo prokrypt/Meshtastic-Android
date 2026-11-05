@@ -304,6 +304,49 @@ interface NodeInfoDao {
         >
 
     /**
+     * One cheap row per node, in [nodeDBbyNum]'s order: the node number and a text fingerprint of every `nodes` column
+     * plus the node's `metadata` row. [observeNodeDBbyNum] compares fingerprints between emissions so that a single
+     * changed node is the only row it decodes, instead of decoding every row's protobuf blobs again.
+     *
+     * Every column must appear in the fingerprint; `NodeFingerprintTest` fails when the `nodes` or `metadata` schema
+     * gains a column this list does not cover. `quote()` renders each value unambiguously (blobs as hex, text quoted,
+     * reals with round-trip precision), and the metadata subquery keeps the FROM and ORDER BY identical to
+     * [nodeDBbyNum] so rows with equal `last_heard` come back in the same order.
+     */
+    @Query(
+        """
+        SELECT num,
+            quote(user) || ',' || quote(long_name) || ',' || quote(short_name) || ',' || quote(position) || ',' ||
+            quote(latitude) || ',' || quote(longitude) || ',' || quote(snr) || ',' || quote(rssi) || ',' ||
+            quote(last_heard) || ',' || quote(device_metrics) || ',' || quote(channel) || ',' || quote(via_mqtt) ||
+            ',' || quote(hops_away) || ',' || quote(is_favorite) || ',' || quote(is_ignored) || ',' ||
+            quote(is_muted) || ',' || quote(environment_metrics) || ',' || quote(power_metrics) || ',' ||
+            quote(air_quality_metrics) || ',' || quote(soil_water_metrics) || ',' || quote(paxcounter) || ',' ||
+            quote(public_key) || ',' || quote(notes) || ',' || quote(display_name) || ',' ||
+            quote(power_channel_labels) || ',' || quote(manually_verified) || ',' || quote(node_status) || ',' ||
+            quote(last_transport) || ',' || quote(has_xeddsa_signed) || ',' || quote(heard_on_current_lora) ||
+            ',' || quote(key_match) || ',' || quote(new_public_key) || ',' ||
+            coalesce(
+                (SELECT quote(metadata.proto) || ',' || quote(metadata.timestamp)
+                    FROM metadata WHERE metadata.num = nodes.num),
+                'NULL'
+            ) AS fingerprint
+        FROM nodes
+        ORDER BY CASE
+            WHEN num = (SELECT myNodeNum FROM my_node LIMIT 1) THEN 0
+            ELSE 1
+        END,
+        last_heard DESC
+        """,
+    )
+    fun nodeFingerprints(): Flow<List<NodeFingerprint>>
+
+    /** Full rows, with metadata, for [nodeNums]; at most [MAX_BIND_PARAMS] numbers per call. */
+    @Query("SELECT * FROM nodes WHERE num IN (:nodeNums)")
+    @Transaction
+    suspend fun getNodesWithRelationsByNums(nodeNums: List<Int>): List<NodeWithRelations>
+
+    /**
      * One-shot snapshot of every node row in the CURRENTLY SELECTED database (not the process-wide stateIn cache). Used
      * by session-safe cache loads (see NodeManagerImpl.loadCachedNodeDB) so a transport switch can't deliver a stale
      * pre-switch map.

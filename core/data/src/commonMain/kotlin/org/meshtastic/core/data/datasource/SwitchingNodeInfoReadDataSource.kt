@@ -19,6 +19,7 @@ package org.meshtastic.core.data.datasource
 import kotlinx.coroutines.flow.Flow
 import org.koin.core.annotation.Single
 import org.meshtastic.core.database.DatabaseProvider
+import org.meshtastic.core.database.dao.observeNodeDBbyNum
 import org.meshtastic.core.database.entity.MyNodeEntity
 import org.meshtastic.core.database.entity.NodeEntity
 import org.meshtastic.core.database.entity.NodeWithRelations
@@ -33,8 +34,9 @@ class SwitchingNodeInfoReadDataSource(private val dbManager: DatabaseProvider) :
         .observeCurrentDb("NodeInfoDataSource.myNodeInfoFlow") { db -> db.nodeInfoDao().getMyNodeInfo() }
         .retryOnDbPoolFailure("myNodeInfo")
 
+    // observeNodeDBbyNum decodes only the rows that changed since its last emission, not the whole table per packet.
     override fun nodeDBbyNumFlow(): Flow<Map<Int, NodeWithRelations>> = dbManager
-        .observeCurrentDb("NodeInfoDataSource.nodeDBbyNumFlow") { db -> db.nodeInfoDao().nodeDBbyNum() }
+        .observeCurrentDb("NodeInfoDataSource.nodeDBbyNumFlow") { db -> db.nodeInfoDao().observeNodeDBbyNum() }
         .retryOnDbPoolFailure("nodeDBbyNum")
 
     override fun getNodesFlow(

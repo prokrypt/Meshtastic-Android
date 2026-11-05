@@ -681,6 +681,22 @@ class SharedRadioInterfaceServiceLivenessTest {
             }
         }
 
+    @Test
+    fun `first heartbeat is sent even when the clock starts at zero`() = runTest(testDispatcher) {
+        // The production clock is monotonic from service creation, so the first keepAlive() can land at ~0 ms.
+        val service = createConnectedService("xAA:BB:CC:DD:EE:FF")
+        try {
+            val transport = createdTransports.single()
+
+            service.keepAlive(now = 0L)
+
+            assertTrue(transport.keepAliveCalled, "the first heartbeat must not be throttled")
+        } finally {
+            service.disconnect()
+            advanceTimeBy(1_000L)
+        }
+    }
+
     // ─── BLE: Liveness timeout triggers recovery ───────────────────────────────────────────────
 
     @Test

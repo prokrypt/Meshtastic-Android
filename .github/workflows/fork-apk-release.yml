@@ -20,7 +20,7 @@ env:
   # Separate app ID and label so this build installs next to the official app. Empty keeps the
   # official ID (then the official app must be uninstalled first: the signing keys differ).
   FORK_APPLICATION_ID: com.geeksville.mesh.prokrypt
-  FORK_APP_NAME: Meshtastic (prokrypt)
+  FORK_APP_NAME: Meshtashtic
 
 jobs:
   release:

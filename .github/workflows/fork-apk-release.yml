@@ -1,0 +1,80 @@
+# prokrypt fork only: builds a signed F-Droid-flavor APK from main and publishes it as a GitHub
+# Release, so Obtainium can install and update it from https://github.com/prokrypt/Meshtastic-Android.
+# Needs two repository secrets: RELEASE_KEYSTORE_B64 (base64 of the keystore) and
+# RELEASE_KEYSTORE_PASSWORD (store and key password; key alias "release").
+name: Fork APK release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fork-apk-release
+  cancel-in-progress: true
+
+env:
+  # Separate app ID and label so this build installs next to the official app. Empty keeps the
+  # official ID (then the official app must be uninstalled first: the signing keys differ).
+  FORK_APPLICATION_ID: com.geeksville.mesh.prokrypt
+  FORK_APP_NAME: Meshtastic (prokrypt)
+
+jobs:
+  release:
+    if: github.repository == 'prokrypt/Meshtastic-Android'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # versionCode is derived from the commit count
+
+      - name: Gradle Setup
+        uses: ./.github/actions/gradle-setup
+        with:
+          cache_read_only: 'false'
+
+      - name: Write signing config
+        env:
+          KEYSTORE_B64: ${{ secrets.RELEASE_KEYSTORE_B64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_B64" ] || [ -z "$KEYSTORE_PASSWORD" ]; then
+            echo "::error::Add the RELEASE_KEYSTORE_B64 and RELEASE_KEYSTORE_PASSWORD repository secrets"
+            exit 1
+          fi
+          echo "$KEYSTORE_B64" | base64 -d > androidApp/release.keystore
+          printf 'storeFile=release.keystore\nstorePassword=%s\nkeyAlias=release\nkeyPassword=%s\n' \
+            "$KEYSTORE_PASSWORD" "$KEYSTORE_PASSWORD" > keystore.properties
+
+      - name: Apply fork app ID and name
+        if: env.FORK_APPLICATION_ID != ''
+        run: |
+          sed -i "s/^APPLICATION_ID=.*/APPLICATION_ID=${FORK_APPLICATION_ID}/" config.properties
+          sed -i "s|<string name=\"app_name\">[^<]*</string>|<string name=\"app_name\">${FORK_APP_NAME}</string>|" \
+            androidApp/src/main/res/values/strings.xml
+          grep -n '^APPLICATION_ID=' config.properties
+
+      - name: Set version
+        run: |
+          base=$(grep '^VERSION_NAME_BASE=' config.properties | cut -d= -f2)
+          echo "VERSION_NAME=${base}-pk.${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
+
+      - name: Build the F-Droid release APK
+        run: ./gradlew :androidApp:assembleFdroidRelease
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          apk=$(ls androidApp/build/outputs/apk/fdroid/release/*.apk | head -n1)
+          out="meshtastic-prokrypt-${VERSION_NAME}.apk"
+          cp "$apk" "$out"
+          gh release create "v${VERSION_NAME}" "$out" \
+            --target "$GITHUB_SHA" \
+            --title "v${VERSION_NAME}" \
+            --notes "Fork build of ${GITHUB_SHA::8} (F-Droid flavor, no analytics)."

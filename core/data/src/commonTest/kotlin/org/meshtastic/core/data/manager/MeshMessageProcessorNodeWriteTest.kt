@@ -203,6 +203,56 @@ class MeshMessageProcessorNodeWriteTest {
     }
 
     @Test
+    fun `a packet whose handler updates the sender again writes the sender once`() = testScope.runTest {
+        val fixture = Fixture(backgroundScope, nodeRepository, dataHandler)
+        // A position or telemetry handler updates the sender a second time while the same packet is handled.
+        every { dataHandler.handleReceivedData(any(), any(), any(), any(), any()) } calls
+            {
+                fixture.nodeManager.updateNodeForSession(SENDER, fixture.session) { node -> node.copy(snr = 7f) }
+            }
+        nodeRepository.releaseWrites.complete(Unit)
+
+        launch { fixture.receive(packetFrom(SENDER, id = 1)) }
+        runCurrent()
+
+        assertEquals(1, nodeRepository.upserts[SENDER], "sender writes: ${nodeRepository.upserts}")
+        val persisted = checkNotNull(nodeRepository.persisted(SENDER))
+        assertEquals(7f, persisted.snr, "the one write carries the handler's update")
+        assertEquals(2, persisted.hopsAway, "and the packet's own update")
+        assertEquals(fixture.nodeManager.nodeDBbyNodeNum[SENDER], persisted)
+    }
+
+    @Test
+    fun `a node update from outside the packet is written while a packet is handled`() = testScope.runTest {
+        val fixture = Fixture(backgroundScope, nodeRepository, dataHandler)
+        nodeRepository.releaseWrites.complete(Unit)
+
+        fixture.nodeManager.beginNodeWriteBatch()
+        fixture.nodeManager.updateNodeForSession(OTHER_SENDER, fixture.session) { node -> node.copy(snr = 3f) }
+        runCurrent()
+        assertNull(nodeRepository.persisted(OTHER_SENDER), "held until the batch ends")
+        fixture.nodeManager.endNodeWriteBatch()
+        runCurrent()
+
+        assertEquals(3f, nodeRepository.persisted(OTHER_SENDER)?.snr)
+    }
+
+    @Test
+    fun `relayed packets inside the heartbeat interval write the local node once`() = testScope.runTest {
+        val fixture = Fixture(backgroundScope, nodeRepository, dataHandler)
+        nodeRepository.releaseWrites.complete(Unit)
+
+        repeat(5) { i ->
+            fixture.receive(packetFrom(SENDER, id = i + 1))
+            runCurrent()
+        }
+
+        assertEquals(1, nodeRepository.upserts[MY_NODE], "local node writes: ${nodeRepository.upserts}")
+        assertEquals(5, nodeRepository.upserts[SENDER], "every packet still writes its sender")
+        assertTrue((nodeRepository.persisted(MY_NODE)?.lastHeard ?: 0) > 0)
+    }
+
+    @Test
     fun `a non-packet frame refreshes the local node without waiting on its database write`() = testScope.runTest {
         val fixture = Fixture(backgroundScope, nodeRepository, dataHandler)
         fixture.nodeManager.setMyNodeNum(MY_NODE)

@@ -19,6 +19,7 @@ package org.meshtastic.core.data.repository
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.coroutineScope
 import androidx.lifecycle.repeatOnLifecycle
+import co.touchlab.kermit.Logger
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -27,6 +28,8 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.launchIn
@@ -36,10 +39,12 @@ import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.koin.core.annotation.Named
 import org.koin.core.annotation.Single
 import org.meshtastic.core.common.di.PROCESS_LIFECYCLE
 import org.meshtastic.core.common.util.handledLaunch
+import org.meshtastic.core.common.util.safeCatching
 import org.meshtastic.core.data.datasource.NodeInfoReadDataSource
 import org.meshtastic.core.data.datasource.NodeInfoWriteDataSource
 import org.meshtastic.core.database.entity.MetadataEntity
@@ -59,6 +64,7 @@ import org.meshtastic.core.repository.NodeRepository
 import org.meshtastic.proto.DeviceMetadata
 import org.meshtastic.proto.LocalStats
 import org.meshtastic.proto.User
+import kotlin.time.Duration.Companion.minutes
 
 /** Repository for managing node-related data, including hardware info, node database, and identity. */
 @Single
@@ -90,17 +96,33 @@ class NodeRepositoryImpl(
     override val myId: StateFlow<String?>
         get() = _myId
 
+    /** The newest local stats received in this process, ahead of the saved copy while its save is held back. */
+    private val receivedLocalStats = MutableStateFlow<LocalStats?>(null)
+
     /** The latest local stats telemetry received from the locally connected node. */
     override val localStats: StateFlow<LocalStats> =
-        localStatsDataSource.localStatsFlow.stateIn(
-            processLifecycle.coroutineScope,
-            SharingStarted.Eagerly,
-            LocalStats.Builder().build(),
-        )
+        combine(localStatsDataSource.localStatsFlow, receivedLocalStats) { saved, received -> received ?: saved }
+            .stateIn(processLifecycle.coroutineScope, SharingStarted.Eagerly, EMPTY_LOCAL_STATS)
 
-    /** Update the cached local stats telemetry. */
+    init {
+        // The radio reports local stats about once a minute, and the saved copy is only read back at a cold start,
+        // before the radio reports again. So save the first report at once, then at most once per
+        // LOCAL_STATS_SAVE_INTERVAL with the newest value. A clear (on disconnect) is saved at once, so a restart never
+        // shows the previous radio's stats.
+        processLifecycle.coroutineScope.launch {
+            receivedLocalStats.filterNotNull().collect { stats ->
+                safeCatching { localStatsDataSource.setLocalStats(stats) }
+                    .onFailure { Logger.w(it) { "Could not save local stats" } }
+                withTimeoutOrNull(LOCAL_STATS_SAVE_INTERVAL) {
+                    receivedLocalStats.first { it == EMPTY_LOCAL_STATS }
+                }
+            }
+        }
+    }
+
+    /** Update the cached local stats telemetry. Readers see it at once; the saved copy follows as described above. */
     override fun updateLocalStats(stats: LocalStats) {
-        processLifecycle.coroutineScope.launch { localStatsDataSource.setLocalStats(stats) }
+        receivedLocalStats.value = stats
     }
 
     /**
@@ -313,4 +335,11 @@ class NodeRepositoryImpl(
         deviceId = deviceId,
         pioEnv = pioEnv,
     )
+
+    private companion object {
+        val EMPTY_LOCAL_STATS: LocalStats = LocalStats.Builder().build()
+
+        /** How long a newer local stats report may wait in memory before it is saved. */
+        val LOCAL_STATS_SAVE_INTERVAL = 10.minutes
+    }
 }

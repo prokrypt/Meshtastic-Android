@@ -183,6 +183,16 @@ interface NodeManager : NodeIdLookup {
     /** Session-bound counterpart to [updateNode]; deferred persistence is admitted only for [session]. */
     fun updateNodeForSession(nodeNum: Int, session: RadioSessionContext, channel: Int = 0, transform: (Node) -> Node)
 
+    /**
+     * Starts holding back the node writes that [updateNode] and its siblings schedule, so a node changed several times
+     * while one packet is handled is written once, with its final state. Memory still updates at once. Pair every call
+     * with [endNodeWriteBatch] in a `finally`, and call both from synchronous code that holds the session lease.
+     */
+    fun beginNodeWriteBatch()
+
+    /** Ends a batch opened by [beginNodeWriteBatch] and schedules the writes it held back. */
+    fun endNodeWriteBatch()
+
     /** Removes a node from the in-memory database by its number. */
     fun removeByNodenum(nodeNum: Int)
 

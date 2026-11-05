@@ -101,7 +101,37 @@ class NodeManagerImpl(
     // Each holds a session lease that teardown drains, so a slow database must not collect one per packet.
     private val pendingPersists = atomic(emptyMap<Pair<Int, RadioSessionContext?>, Any>())
 
+    // Writes held back while a packet is handled (see beginNodeWriteBatch). A packet that carries a position or
+    // telemetry updates its sender twice, and each update used to start its own database write.
+    private val nodeWriteBatchDepth = atomic(0)
+    private val batchedPersists = atomic(emptySet<Pair<Int, RadioSessionContext?>>())
+
+    override fun beginNodeWriteBatch() {
+        nodeWriteBatchDepth.incrementAndGet()
+    }
+
+    override fun endNodeWriteBatch() {
+        // Decrement before draining: a writer that sees the depth still above zero after adding its key is then sure
+        // this drain, or a later batch's, will pick the key up.
+        nodeWriteBatchDepth.decrementAndGet()
+        flushBatchedPersists()
+    }
+
+    private fun flushBatchedPersists() {
+        batchedPersists.getAndSet(emptySet()).forEach { (nodeNum, session) -> launchPersistence(nodeNum, session) }
+    }
+
     private fun schedulePersistence(nodeNum: Int, session: RadioSessionContext?) {
+        if (nodeWriteBatchDepth.value > 0) {
+            batchedPersists.update { it + (nodeNum to session) }
+            // Every batch ended between the check and the add, so nothing else will drain this key.
+            if (nodeWriteBatchDepth.value == 0) flushBatchedPersists()
+            return
+        }
+        launchPersistence(nodeNum, session)
+    }
+
+    private fun launchPersistence(nodeNum: Int, session: RadioSessionContext?) {
         val key = nodeNum to session
         val token = Any()
         var claimed = false

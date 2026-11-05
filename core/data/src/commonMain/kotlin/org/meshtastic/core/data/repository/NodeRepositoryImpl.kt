@@ -26,6 +26,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.map
@@ -42,6 +44,7 @@ import org.meshtastic.core.data.datasource.NodeInfoReadDataSource
 import org.meshtastic.core.data.datasource.NodeInfoWriteDataSource
 import org.meshtastic.core.database.entity.MetadataEntity
 import org.meshtastic.core.database.entity.MyNodeEntity
+import org.meshtastic.core.database.entity.NodeWithRelations
 import org.meshtastic.core.database.entity.toEntity
 import org.meshtastic.core.datastore.LocalStatsDataSource
 import org.meshtastic.core.di.CoroutineDispatchers
@@ -110,10 +113,32 @@ class NodeRepositoryImpl(
     override val nodeDBbyNum: StateFlow<Map<Int, Node>> =
         nodeInfoReadDataSource
             .nodeDBbyNumFlow()
-            .mapLatest { map -> map.mapValues { (_, it) -> it.toModel() } }
+            .toNodeModels()
             .flowOn(dispatchers.io)
             .conflate()
             .stateIn(processLifecycle.coroutineScope, SharingStarted.Eagerly, emptyMap())
+
+    /**
+     * Maps each row to a [Node], reusing the previous [Node] for a row that is the same instance as last emission.
+     * [NodeInfoReadDataSource.nodeDBbyNumFlow] hands back the same instance for every row that did not change, so a
+     * packet from one node maps one row instead of the whole mesh.
+     */
+    private fun Flow<Map<Int, NodeWithRelations>>.toNodeModels(): Flow<Map<Int, Node>> = flow {
+        var lastRows: Map<Int, NodeWithRelations> = emptyMap()
+        var lastModels: Map<Int, Node> = emptyMap()
+        emitAll(
+            mapLatest { rows ->
+                val models = LinkedHashMap<Int, Node>(rows.size)
+                for ((num, row) in rows) {
+                    val reused = if (lastRows[num] === row) lastModels[num] else null
+                    models[num] = reused ?: row.toModel()
+                }
+                lastRows = rows
+                lastModels = models
+                models
+            },
+        )
+    }
 
     init {
         // Backfill denormalized name columns for existing nodes on startup. A withDb timeout or SQL failure here is

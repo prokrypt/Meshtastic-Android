@@ -37,14 +37,18 @@ import org.meshtastic.core.common.util.Exceptions
 import org.meshtastic.core.data.datasource.NodeInfoReadDataSource
 import org.meshtastic.core.data.datasource.NodeInfoWriteDataSource
 import org.meshtastic.core.database.entity.MyNodeEntity
+import org.meshtastic.core.database.entity.NodeEntity
 import org.meshtastic.core.database.entity.NodeWithRelations
 import org.meshtastic.core.di.CoroutineDispatchers
 import org.meshtastic.core.model.MeshLog
 import org.meshtastic.core.testing.FakeLocalStatsDataSource
+import org.meshtastic.proto.User
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotSame
+import kotlin.test.assertSame
 
 abstract class CommonNodeRepositoryTest {
 
@@ -151,4 +155,41 @@ abstract class CommonNodeRepositoryTest {
                 Exceptions.reporter = previousReporter
             }
         }
+
+    @Test
+    fun `nodeDBbyNum maps only rows that changed since the last emission`() = runTest(testDispatcher) {
+        fun row(num: Int, name: String) = NodeWithRelations(
+            NodeEntity(
+                num = num,
+                user =
+                User.Builder()
+                    .also {
+                        it.id = "!$num"
+                        it.long_name = name
+                    }
+                    .build(),
+            ),
+            metadata = null,
+        )
+        val unchanged = row(1, "one")
+        val rows = MutableStateFlow(mapOf(1 to unchanged, 2 to row(2, "two")))
+        every { readDataSource.nodeDBbyNumFlow() } returns rows
+        val repo =
+            NodeRepositoryImpl(
+                lifecycleOwner.lifecycle,
+                readDataSource,
+                writeDataSource,
+                dispatchers,
+                localStatsDataSource,
+            )
+        val before = repo.nodeDBbyNum.filter { it.size == 2 }.first()
+
+        rows.value = mapOf(2 to row(2, "two, renamed"), 1 to unchanged)
+        val after = repo.nodeDBbyNum.filter { it[2]?.user?.long_name == "two, renamed" }.first()
+
+        assertSame(before.getValue(1), after.getValue(1))
+        assertNotSame(before.getValue(2), after.getValue(2))
+        assertEquals(listOf(2, 1), after.keys.toList(), "order follows the database")
+        assertEquals(unchanged.toModel(), after.getValue(1))
+    }
 }

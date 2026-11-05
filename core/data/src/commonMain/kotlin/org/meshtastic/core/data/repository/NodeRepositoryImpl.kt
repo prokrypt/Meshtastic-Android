@@ -99,6 +99,11 @@ class NodeRepositoryImpl(
     /** The newest local stats received in this process, ahead of the saved copy while its save is held back. */
     private val receivedLocalStats = MutableStateFlow<LocalStats?>(null)
 
+    private data class LiveLastHeard(val nodeNum: Int, val lastHeard: Int)
+
+    /** A lastHeard newer than its database row, whose write is held back (see [setLiveLastHeard]). */
+    private val liveLastHeard = MutableStateFlow<LiveLastHeard?>(null)
+
     /** The latest local stats telemetry received from the locally connected node. */
     override val localStats: StateFlow<LocalStats> =
         combine(localStatsDataSource.localStatsFlow, receivedLocalStats) { saved, received -> received ?: saved }
@@ -136,9 +141,27 @@ class NodeRepositoryImpl(
         nodeInfoReadDataSource
             .nodeDBbyNumFlow()
             .toNodeModels()
+            .combine(liveLastHeard) { nodes, live -> nodes.withLiveLastHeard(live) }
             .flowOn(dispatchers.io)
             .conflate()
             .stateIn(processLifecycle.coroutineScope, SharingStarted.Eagerly, emptyMap())
+
+    override fun setLiveLastHeard(nodeNum: Int, lastHeard: Int) {
+        liveLastHeard.value = LiveLastHeard(nodeNum, lastHeard)
+    }
+
+    private fun Map<Int, Node>.withLiveLastHeard(live: LiveLastHeard?): Map<Int, Node> {
+        val node = live?.let { this[it.nodeNum] }
+        val overlaid = node?.withLiveLastHeard(live)
+        return if (overlaid == null || overlaid === node) this else toMutableMap().apply { put(overlaid.num, overlaid) }
+    }
+
+    private fun Node.withLiveLastHeard(live: LiveLastHeard?): Node =
+        if (live != null && num == live.nodeNum && lastHeard < live.lastHeard) {
+            copy(lastHeard = live.lastHeard)
+        } else {
+            this
+        }
 
     /**
      * Maps each row to a [Node], reusing the previous [Node] for a row that is the same instance as last emission.
@@ -253,6 +276,7 @@ class NodeRepositoryImpl(
             lastHeardMin = if (onlyOnline) onlineTimeThreshold() else -1,
         )
         .mapLatest { list -> list.map { it.toModel() }.filter { node -> node.matchesSearch(filter) } }
+        .combine(liveLastHeard) { nodes, live -> nodes.map { it.withLiveLastHeard(live) } }
         .flowOn(dispatchers.io)
         .conflate()
 

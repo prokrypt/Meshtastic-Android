@@ -251,6 +251,11 @@ class MeshMessageProcessorImplTest {
                     assertTrue(authorityDepth > 0, "the nested lease must be taken while the handler holds authority")
                     updatedNodes += it.arg<Int>(0)
                 }
+            every { nodeManager.refreshLastHeard(any(), any(), session) } calls
+                {
+                    assertTrue(authorityDepth > 0, "the nested lease must be taken while the handler holds authority")
+                    updatedNodes += it.arg<Int>(0)
+                }
             val packet = textPacket(id = 9, from = 999)
 
             processor.handleFromRadio(
@@ -350,7 +355,7 @@ class MeshMessageProcessorImplTest {
             processor.handleFromRadio(frame(fromRadio.encode(), replacementSession), myNodeNum)
             advanceUntilIdle()
 
-            verify(mode = VerifyMode.exactly(2)) { nodeManager.updateNodeForSession(myNodeNum, any(), any(), any()) }
+            verify(mode = VerifyMode.exactly(2)) { nodeManager.refreshLastHeard(myNodeNum, any(), any()) }
         }
 
     @Test
@@ -772,8 +777,8 @@ class MeshMessageProcessorImplTest {
         processor.handleReceivedMeshPacket(packet, myNodeNum)
         advanceUntilIdle()
 
-        // Should have called updateNode for myNodeNum (lastHeard update)
-        verify { nodeManager.updateNodeForSession(myNodeNum, session, any(), any()) }
+        // Should have refreshed myNodeNum's lastHeard
+        verify { nodeManager.refreshLastHeard(myNodeNum, any(), session) }
     }
 
     @Test

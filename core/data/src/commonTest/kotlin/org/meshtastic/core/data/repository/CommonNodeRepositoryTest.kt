@@ -221,4 +221,35 @@ abstract class CommonNodeRepositoryTest {
         assertEquals(listOf(2, 1), after.keys.toList(), "order follows the database")
         assertEquals(unchanged.toModel(), after.getValue(1))
     }
+
+    @Test
+    fun `a live lastHeard shows ahead of an older database row`() = runTest(testDispatcher) {
+        fun row(num: Int, lastHeard: Int) = NodeWithRelations(
+            NodeEntity(
+                num = num,
+                user = User.Builder().also { it.id = "!$num" }.build(),
+                lastHeard = lastHeard,
+            ),
+            metadata = null,
+        )
+        val rows = MutableStateFlow(mapOf(1 to row(1, 100), 2 to row(2, 100)))
+        every { readDataSource.nodeDBbyNumFlow() } returns rows
+        val repo =
+            NodeRepositoryImpl(
+                lifecycleOwner.lifecycle,
+                readDataSource,
+                writeDataSource,
+                dispatchers,
+                localStatsDataSource,
+            )
+        repo.nodeDBbyNum.filter { it.size == 2 }.first()
+
+        repo.setLiveLastHeard(1, 160)
+        val live = repo.nodeDBbyNum.filter { it[1]?.lastHeard == 160 }.first()
+        assertEquals(100, live[2]?.lastHeard, "other nodes keep their row")
+
+        rows.value = mapOf(1 to row(1, 200), 2 to row(2, 100))
+        val written = repo.nodeDBbyNum.filter { it[1]?.lastHeard == 200 }.first()
+        assertEquals(200, written[1]?.lastHeard, "a newer row wins over the live value")
+    }
 }

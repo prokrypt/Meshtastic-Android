@@ -193,6 +193,13 @@ interface NodeManager : NodeIdLookup {
     /** Ends a batch opened by [beginNodeWriteBatch] and schedules the writes it held back. */
     fun endNodeWriteBatch()
 
+    /**
+     * Sets [nodeNum]'s lastHeard in memory and on screen at once, but writes it to the database at most once per
+     * persist interval; any other write of the node carries the newest value with it. For the local node's link
+     * heartbeat, which would otherwise rewrite the row for every frame.
+     */
+    fun refreshLastHeard(nodeNum: Int, lastHeard: Int, session: RadioSessionContext)
+
     /** Removes a node from the in-memory database by its number. */
     fun removeByNodenum(nodeNum: Int)
 

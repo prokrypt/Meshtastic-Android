@@ -302,8 +302,8 @@ class MeshMessageProcessorImpl(
                     applySenderPacketUpdate(node, packet, decoded).copy(lastHeard = nowSeconds.toInt())
                 }
             } else {
-                // Any frame proves the link is alive, so the local node shares the heartbeat's throttled refresh
-                // (at most every 10 minutes) instead of being rewritten for every packet the mesh relays.
+                // Any frame proves the link is alive, so the local node shares the heartbeat's throttled refresh,
+                // which updates the screen every 30 s but writes the row at most every 10 minutes.
                 refreshLocalNodeLastHeard(session, myNodeNum)
                 nodeManager.updateNodeForSession(from, session, channel = packet.channel) { node ->
                     applySenderPacketUpdate(node, packet, decoded)
@@ -355,10 +355,10 @@ class MeshMessageProcessorImpl(
      * heartbeat → FromRadio queueStatus every 30 s). Without this the local node would look stale in the UI even though
      * the connection is healthy. Packets the local node sends itself update it directly in [processReceivedMeshPacket].
      *
-     * To avoid flooding the DB on high-frequency frames (one per relayed packet on a busy mesh, and log records many
-     * times per second when debug logging is enabled), refreshes are throttled to at most once per
-     * [LOCAL_NODE_REFRESH_INTERVAL_MS]. The write is scheduled on the node's session lease like the packet updates, so
-     * the handler never waits on the database.
+     * Frames come fast (one per relayed packet on a busy mesh, and log records many times per second when debug logging
+     * is enabled), so the screen is refreshed at most once per [LOCAL_NODE_REFRESH_INTERVAL_MS], and
+     * [NodeManager.refreshLastHeard] writes the row far less often than that. Any write is scheduled on the node's
+     * session lease like the packet updates, so the handler never waits on the database.
      */
     private fun refreshLocalNodeLastHeard(session: RadioSessionContext, myNodeNum: Int? = nodeManager.myNodeNum.value) {
         val now = nowMillis
@@ -366,7 +366,7 @@ class MeshMessageProcessorImpl(
         if (sameGeneration && now - lastLocalNodeRefreshMs < LOCAL_NODE_REFRESH_INTERVAL_MS) return
 
         val myNum = myNodeNum ?: return
-        nodeManager.updateNodeForSession(myNum, session) { node: Node -> node.copy(lastHeard = nowSeconds.toInt()) }
+        nodeManager.refreshLastHeard(myNum, nowSeconds.toInt(), session)
         lastLocalNodeRefreshGeneration = session.generation
         lastLocalNodeRefreshMs = now
     }
@@ -409,10 +409,10 @@ class MeshMessageProcessorImpl(
 
     companion object {
         /**
-         * Minimum interval between local-node `lastHeard` refreshes, and so between the DB writes they schedule, in
-         * milliseconds. Ten minutes keeps the local node well inside the online window while sparing the flash a
-         * rewrite every heartbeat or relayed packet. Packets the local node sends itself still refresh it at once.
+         * Minimum interval between local-node `lastHeard` refreshes in memory and on screen, in milliseconds. Aligned
+         * with the heartbeat interval (30 s). The database write behind them is spaced further apart by
+         * [NodeManager.refreshLastHeard].
          */
-        private const val LOCAL_NODE_REFRESH_INTERVAL_MS = 10 * 60_000L
+        private const val LOCAL_NODE_REFRESH_INTERVAL_MS = 30_000L
     }
 }

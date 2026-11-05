@@ -303,7 +303,7 @@ class MeshMessageProcessorImpl(
                 }
             } else {
                 // Any frame proves the link is alive, so the local node shares the heartbeat's throttled refresh
-                // instead of being rewritten for every packet the mesh relays.
+                // (at most every 10 minutes) instead of being rewritten for every packet the mesh relays.
                 refreshLocalNodeLastHeard(session, myNodeNum)
                 nodeManager.updateNodeForSession(from, session, channel = packet.channel) { node ->
                     applySenderPacketUpdate(node, packet, decoded)
@@ -409,9 +409,10 @@ class MeshMessageProcessorImpl(
 
     companion object {
         /**
-         * Minimum interval between local-node `lastHeard` DB writes, in milliseconds. Aligned with the heartbeat
-         * interval (30 s) so that one write per heartbeat cycle keeps the node fresh without unnecessary DB churn.
+         * Minimum interval between local-node `lastHeard` refreshes, and so between the DB writes they schedule, in
+         * milliseconds. Ten minutes keeps the local node well inside the online window while sparing the flash a
+         * rewrite every heartbeat or relayed packet. Packets the local node sends itself still refresh it at once.
          */
-        private const val LOCAL_NODE_REFRESH_INTERVAL_MS = 30_000L
+        private const val LOCAL_NODE_REFRESH_INTERVAL_MS = 10 * 60_000L
     }
 }

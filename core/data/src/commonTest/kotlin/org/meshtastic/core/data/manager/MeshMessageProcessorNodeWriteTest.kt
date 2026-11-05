@@ -238,7 +238,7 @@ class MeshMessageProcessorNodeWriteTest {
     }
 
     @Test
-    fun `relayed packets inside the heartbeat interval write the local node once`() = testScope.runTest {
+    fun `relayed packets inside the refresh interval write the local node once`() = testScope.runTest {
         val fixture = Fixture(backgroundScope, nodeRepository, dataHandler)
         nodeRepository.releaseWrites.complete(Unit)
 

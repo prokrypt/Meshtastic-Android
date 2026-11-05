@@ -63,7 +63,6 @@ import org.meshtastic.core.ble.BluetoothRepository
 import org.meshtastic.core.common.di.PROCESS_LIFECYCLE
 import org.meshtastic.core.common.state.RadioOperationLock
 import org.meshtastic.core.common.util.ignoreExceptionSuspend
-import org.meshtastic.core.common.util.nowMillis
 import org.meshtastic.core.common.util.safeCatching
 import org.meshtastic.core.di.CoroutineDispatchers
 import org.meshtastic.core.model.ConnectionState
@@ -85,6 +84,7 @@ import org.meshtastic.core.repository.ReceivedRadioFrame
 import org.meshtastic.core.repository.TransportDisconnectReason
 import org.meshtastic.proto.ToRadio
 import kotlin.concurrent.Volatile
+import kotlin.time.TimeSource
 
 private const val USB_PERMISSION_DENIED_ERROR = "USB permission denied. Reconnect the device to try again."
 
@@ -483,19 +483,28 @@ class SharedRadioInterfaceService(
 
     private val listenersInitialized = atomic(false)
     private var heartbeatJob: Job? = null
-    private var lastHeartbeatMillis = 0L
+    // Starts one interval in the past so the first keepAlive() is never suppressed: [clockMillis] counts from service
+    // creation, not from the epoch.
+    private var lastHeartbeatMillis = -HEARTBEAT_INTERVAL_MILLIS
 
     @Volatile private var lastDataReceivedMillis = 0L
 
+    /** Origin of the production [clockMillis]. */
+    private val monotonicOrigin = TimeSource.Monotonic.markNow()
+
     /**
-     * Internal test seam for deterministic clock injection. Production uses [nowMillis]; tests override this to a
+     * Internal test seam for deterministic clock injection. Production uses a monotonic clock that, on Android, stops
+     * while the device is in deep sleep (the same basis as the coroutine `delay` driving the heartbeat loop). A wall
+     * clock here made [checkLiveness] count time the phone spent asleep as radio silence, so the first heartbeat after
+     * any sleep longer than [LIVENESS_TIMEOUT_MILLIS] on a quiet mesh tore down a healthy BLE link and re-ran the full
+     * config download. Tests override this to a
      * controllable clock so [onConnect], [handleFromRadio], [checkLiveness], and [keepAlive] all share one coherent
      * time source. Not a constructor parameter to avoid breaking Koin @Single annotation generation (which would try to
      * resolve `() -> Long` from the DI graph).
      */
     @Volatile
     @Suppress("MemberVisibilityCanBePrivate")
-    internal var clockMillis: () -> Long = { nowMillis }
+    internal var clockMillis: () -> Long = { monotonicOrigin.elapsedNow().inWholeMilliseconds }
 
     /** The current time from the injected clock. */
     private fun now(): Long = clockMillis()

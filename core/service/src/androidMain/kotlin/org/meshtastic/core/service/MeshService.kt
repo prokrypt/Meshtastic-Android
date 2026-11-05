@@ -43,6 +43,7 @@ import org.meshtastic.core.repository.MeshConnectionManager
 import org.meshtastic.core.repository.MeshNotificationManager
 import org.meshtastic.core.repository.RadioInterfaceService
 import org.meshtastic.core.repository.RadioTransportFactory
+import org.meshtastic.core.takserver.TAKServerManager
 
 /**
  * Android foreground service that hosts the Meshtastic mesh radio connection.
@@ -73,6 +74,8 @@ class MeshService : Service() {
 
     private val quickSettingsTileController: QuickSettingsTileController by inject()
 
+    private val takServerManager: TAKServerManager by inject()
+
     private var isServiceInitialized = false
 
     /**
@@ -88,12 +91,20 @@ class MeshService : Service() {
     private var addressWaitJob: Job? = null
 
     /**
-     * Partial wake lock held while the foreground service is running. Prevents the CPU from being throttled while the
-     * TAK server's keepalive coroutines, socket writes, and mesh packet handlers need to run on a regular cadence.
-     * Without this, OEM battery optimizations can pause coroutines for long enough that connected TAK clients
-     * (ATAK/iTAK) time out waiting for data, even though the foreground service itself keeps the process alive.
+     * Partial wake lock held while a device is selected and the local TAK server is running. Prevents the CPU from
+     * being throttled while the TAK server's keepalive coroutines, socket writes, and mesh packet handlers need to run
+     * on a regular cadence. Without this, OEM battery optimizations can pause coroutines for long enough that connected
+     * TAK clients (ATAK/iTAK) time out waiting for data, even though the foreground service itself keeps the process
+     * alive.
+     *
+     * Not held when the TAK server is off: nothing else needs the CPU on a fixed cadence, inbound radio traffic wakes
+     * the device on its own, and holding it unconditionally kept the phone out of deep sleep for 30 minutes after every
+     * app open.
      */
     private var wakeLock: PowerManager.WakeLock? = null
+
+    /** True once [onStartCommand] has resolved a connectable selected device; gates [wakeLock]. */
+    private var deviceSelected = false
 
     /** Keeps the CPU up for exactly as long as a long radio operation is in flight. See [OperationWakeLock]. */
     private val operationWakeLock by lazy { OperationWakeLock(this, serviceScope) }
@@ -131,6 +142,9 @@ class MeshService : Service() {
         // session) so message notifications can link to them and get Conversations-section treatment on phones.
         conversationShortcutPublisher.startObserving(serviceScope)
         quickSettingsTileController.startObserving()
+
+        // The connection wake lock exists for the TAK server, so follow its running state.
+        serviceScope.launch { takServerManager.isRunning.collect { updateConnectionWakeLock() } }
 
         // Hold a wake lock for as long as — and no longer than — some radio operation is in flight.
         serviceScope.launch {
@@ -180,7 +194,8 @@ class MeshService : Service() {
             // Address is already loaded and valid — proceed normally.
             addressWaitJob?.cancel()
             addressWaitJob = null
-            acquireWakeLock()
+            deviceSelected = true
+            updateConnectionWakeLock()
             Logger.i { "MeshService: selected device ready (${address.anonymize}), staying foreground" }
             return START_STICKY
         }
@@ -196,7 +211,8 @@ class MeshService : Service() {
     /**
      * Waits for [RadioInterfaceService.currentDeviceAddressFlow] to emit a valid device address. Resolves the transient
      * null/blank window at cold start without busy-polling [RadioInterfaceService.getDeviceAddress].
-     * - On a valid emission: acquires the wake lock and the service continues as a normal foreground service.
+     * - On a valid emission: the service continues as a normal foreground service (taking the connection wake lock if
+     *   the TAK server is running).
      * - On timeout (no valid address observed): concludes no device is genuinely selected and stops cleanly.
      *
      * Uses [first] with a predicate rather than `drop(1)` so we never skip an already-current valid StateFlow value: if
@@ -215,7 +231,8 @@ class MeshService : Service() {
                     Logger.i {
                         "MeshService: selected device resolved (${resolved.anonymize}) after address-flow wait"
                     }
-                    acquireWakeLock()
+                    deviceSelected = true
+                    updateConnectionWakeLock()
                 }
 
                 ServiceStayAliveDecision.STAY_FOR_OPERATION ->
@@ -231,10 +248,19 @@ class MeshService : Service() {
 
     /** Releases everything this service holds and stops it. Safe to call before it ever reached the foreground. */
     private fun stopServiceCleanly() {
+        deviceSelected = false
         releaseWakeLock()
         operationWakeLock.stop()
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         stopSelf()
+    }
+
+    /**
+     * Holds [wakeLock] while a device is selected and the TAK server is running, and releases it otherwise. Re-run on
+     * every start command so an expired lock is re-armed on app open, as before.
+     */
+    private fun updateConnectionWakeLock() {
+        if (deviceSelected && takServerManager.isRunning.value) acquireWakeLock() else releaseWakeLock()
     }
 
     private fun acquireWakeLock() {

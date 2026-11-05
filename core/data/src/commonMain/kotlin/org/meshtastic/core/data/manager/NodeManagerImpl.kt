@@ -33,6 +33,7 @@ import org.meshtastic.core.common.di.ServiceScope
 import org.meshtastic.core.common.util.clampTimestampToNow
 import org.meshtastic.core.common.util.crc32
 import org.meshtastic.core.common.util.handledLaunch
+import org.meshtastic.core.common.util.nowMillis
 import org.meshtastic.core.model.Capabilities
 import org.meshtastic.core.model.MyNodeInfo
 import org.meshtastic.core.model.Node
@@ -101,7 +102,53 @@ class NodeManagerImpl(
     // Each holds a session lease that teardown drains, so a slow database must not collect one per packet.
     private val pendingPersists = atomic(emptyMap<Pair<Int, RadioSessionContext?>, Any>())
 
+    // Writes held back while a packet is handled (see beginNodeWriteBatch). A packet that carries a position or
+    // telemetry updates its sender twice, and each update used to start its own database write.
+    private val nodeWriteBatchDepth = atomic(0)
+    private val batchedPersists = atomic(emptySet<Pair<Int, RadioSessionContext?>>())
+
+    override fun beginNodeWriteBatch() {
+        nodeWriteBatchDepth.incrementAndGet()
+    }
+
+    override fun endNodeWriteBatch() {
+        // Decrement before draining: a writer that sees the depth still above zero after adding its key is then sure
+        // this drain, or a later batch's, will pick the key up.
+        nodeWriteBatchDepth.decrementAndGet()
+        flushBatchedPersists()
+    }
+
+    // When refreshLastHeard last let a write through, by [clockMillis]; Long.MIN_VALUE until the first one.
+    private val lastHeardPersistedAtMs = atomic(Long.MIN_VALUE)
+
+    /** Test seam over the wall clock used to space out [refreshLastHeard] writes. */
+    internal var clockMillis: () -> Long = { nowMillis }
+
+    override fun refreshLastHeard(nodeNum: Int, lastHeard: Int, session: RadioSessionContext) {
+        val change = updateNodeState(nodeNum, channel = 0) { node -> node.copy(lastHeard = lastHeard) } ?: return
+        nodeRepository.setLiveLastHeard(nodeNum, change.next.lastHeard)
+        if (!shouldPersist(change.next)) return
+        val now = clockMillis()
+        val last = lastHeardPersistedAtMs.value
+        val due = last == Long.MIN_VALUE || now - last >= LAST_HEARD_PERSIST_INTERVAL_MS || now < last
+        if (due && lastHeardPersistedAtMs.compareAndSet(last, now)) schedulePersistence(nodeNum, session)
+    }
+
+    private fun flushBatchedPersists() {
+        batchedPersists.getAndSet(emptySet()).forEach { (nodeNum, session) -> launchPersistence(nodeNum, session) }
+    }
+
     private fun schedulePersistence(nodeNum: Int, session: RadioSessionContext?) {
+        if (nodeWriteBatchDepth.value > 0) {
+            batchedPersists.update { it + (nodeNum to session) }
+            // Every batch ended between the check and the add, so nothing else will drain this key.
+            if (nodeWriteBatchDepth.value == 0) flushBatchedPersists()
+            return
+        }
+        launchPersistence(nodeNum, session)
+    }
+
+    private fun launchPersistence(nodeNum: Int, session: RadioSessionContext?) {
         val key = nodeNum to session
         val token = Any()
         var claimed = false
@@ -374,6 +421,9 @@ class NodeManagerImpl(
 
     companion object {
         private const val NODE_PERSISTENCE_LANE_COUNT = 64
+
+        /** Longest a refreshLastHeard value waits in memory before it is written to the database. */
+        internal const val LAST_HEARD_PERSIST_INTERVAL_MS = 10 * 60_000L
         private const val GENERATED_NODE_NAME_SUFFIX_LENGTH = 4
 
         /** `precision_bits` value used by firmware for an un-degraded (full 32-bit) coordinate. */

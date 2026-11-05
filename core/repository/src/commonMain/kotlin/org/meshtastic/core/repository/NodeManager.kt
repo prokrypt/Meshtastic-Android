@@ -183,6 +183,23 @@ interface NodeManager : NodeIdLookup {
     /** Session-bound counterpart to [updateNode]; deferred persistence is admitted only for [session]. */
     fun updateNodeForSession(nodeNum: Int, session: RadioSessionContext, channel: Int = 0, transform: (Node) -> Node)
 
+    /**
+     * Starts holding back the node writes that [updateNode] and its siblings schedule, so a node changed several times
+     * while one packet is handled is written once, with its final state. Memory still updates at once. Pair every call
+     * with [endNodeWriteBatch] in a `finally`, and call both from synchronous code that holds the session lease.
+     */
+    fun beginNodeWriteBatch()
+
+    /** Ends a batch opened by [beginNodeWriteBatch] and schedules the writes it held back. */
+    fun endNodeWriteBatch()
+
+    /**
+     * Sets [nodeNum]'s lastHeard in memory and on screen at once, but writes it to the database at most once per
+     * persist interval; any other write of the node carries the newest value with it. For the local node's link
+     * heartbeat, which would otherwise rewrite the row for every frame.
+     */
+    fun refreshLastHeard(nodeNum: Int, lastHeard: Int, session: RadioSessionContext)
+
     /** Removes a node from the in-memory database by its number. */
     fun removeByNodenum(nodeNum: Int)
 

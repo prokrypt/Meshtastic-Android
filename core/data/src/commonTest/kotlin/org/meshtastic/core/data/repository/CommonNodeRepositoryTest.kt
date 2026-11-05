@@ -30,7 +30,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.meshtastic.core.common.util.Exceptions
@@ -42,6 +44,7 @@ import org.meshtastic.core.database.entity.NodeWithRelations
 import org.meshtastic.core.di.CoroutineDispatchers
 import org.meshtastic.core.model.MeshLog
 import org.meshtastic.core.testing.FakeLocalStatsDataSource
+import org.meshtastic.proto.LocalStats
 import org.meshtastic.proto.User
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
@@ -49,6 +52,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotSame
 import kotlin.test.assertSame
+import kotlin.time.Duration.Companion.minutes
 
 abstract class CommonNodeRepositoryTest {
 
@@ -108,6 +112,31 @@ abstract class CommonNodeRepositoryTest {
         maxChannels = 0,
         hasWifi = false,
     )
+
+    private fun localStats(uptime: Int) = LocalStats.Builder().also { it.uptime_seconds = uptime }.build()
+
+    @Test
+    fun `local stats reach readers at once and are saved at most once per interval`() = runTest(testDispatcher) {
+        val saved = localStatsDataSource.localStatsFlow
+
+        repository.updateLocalStats(localStats(1))
+        assertEquals(localStats(1), repository.localStats.value)
+        assertEquals(localStats(1), saved.value, "the first report is saved at once")
+
+        repository.updateLocalStats(localStats(2))
+        repository.updateLocalStats(localStats(3))
+        assertEquals(localStats(3), repository.localStats.value, "readers see every report at once")
+        assertEquals(localStats(1), saved.value, "later reports wait for the interval")
+
+        advanceTimeBy(10.minutes)
+        runCurrent()
+        assertEquals(localStats(3), saved.value, "the newest report is saved when the interval ends")
+
+        repository.updateLocalStats(localStats(4))
+        repository.updateLocalStats(LocalStats.Builder().build())
+        assertEquals(LocalStats.Builder().build(), saved.value, "a clear is saved at once")
+        assertEquals(LocalStats.Builder().build(), repository.localStats.value)
+    }
 
     @Test
     fun `effectiveLogNodeId maps local node number to NODE_NUM_LOCAL`() = runTest(testDispatcher) {
@@ -191,5 +220,36 @@ abstract class CommonNodeRepositoryTest {
         assertNotSame(before.getValue(2), after.getValue(2))
         assertEquals(listOf(2, 1), after.keys.toList(), "order follows the database")
         assertEquals(unchanged.toModel(), after.getValue(1))
+    }
+
+    @Test
+    fun `a live lastHeard shows ahead of an older database row`() = runTest(testDispatcher) {
+        fun row(num: Int, lastHeard: Int) = NodeWithRelations(
+            NodeEntity(
+                num = num,
+                user = User.Builder().also { it.id = "!$num" }.build(),
+                lastHeard = lastHeard,
+            ),
+            metadata = null,
+        )
+        val rows = MutableStateFlow(mapOf(1 to row(1, 100), 2 to row(2, 100)))
+        every { readDataSource.nodeDBbyNumFlow() } returns rows
+        val repo =
+            NodeRepositoryImpl(
+                lifecycleOwner.lifecycle,
+                readDataSource,
+                writeDataSource,
+                dispatchers,
+                localStatsDataSource,
+            )
+        repo.nodeDBbyNum.filter { it.size == 2 }.first()
+
+        repo.setLiveLastHeard(1, 160)
+        val live = repo.nodeDBbyNum.filter { it[1]?.lastHeard == 160 }.first()
+        assertEquals(100, live[2]?.lastHeard, "other nodes keep their row")
+
+        rows.value = mapOf(1 to row(1, 200), 2 to row(2, 100))
+        val written = repo.nodeDBbyNum.filter { it[1]?.lastHeard == 200 }.first()
+        assertEquals(200, written[1]?.lastHeard, "a newer row wins over the live value")
     }
 }

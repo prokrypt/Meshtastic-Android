@@ -20,12 +20,15 @@ import dev.mokkery.MockMode
 import dev.mokkery.answering.returns
 import dev.mokkery.every
 import dev.mokkery.mock
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
@@ -334,6 +337,47 @@ abstract class CommonMeshLogRepositoryTest {
             assertEquals(1, writes)
             assertEquals(batch * 2, dao.getAllLogsSnapshot().size)
         }
+
+    @Test
+    fun `inserts that queue behind a running write share one transaction`() = runTest(testDispatcher) {
+        val firstWriteHeld = CompletableDeferred<Unit>()
+        var writes = 0
+        dbProvider.beforeWithDb = {
+            writes++
+            if (writes == 1) firstWriteHeld.await()
+        }
+        val logs = List(20) { retentionLog("row-$it", nowMillis + it) }
+
+        val inserts = logs.map { log -> launch { repository.insert(log) } }
+        firstWriteHeld.complete(Unit)
+        inserts.joinAll()
+
+        assertEquals(2, writes, "the first row alone, then the 19 that queued behind it")
+        val stored = dbProvider.currentDb.value.meshLogDao().getAllLogsSnapshot().map { it.uuid }
+        assertEquals(logs.map { it.uuid }.toSet(), stored.toSet())
+    }
+
+    @Test
+    fun `a row that fails in a shared transaction does not cost the others theirs`() = runTest(testDispatcher) {
+        val dao = dbProvider.currentDb.value.meshLogDao()
+        dao.insertIgnore(listOf(retentionLog("taken", nowMillis).asEntity()))
+        val firstWriteHeld = CompletableDeferred<Unit>()
+        var writes = 0
+        dbProvider.beforeWithDb = {
+            writes++
+            if (writes == 1) firstWriteHeld.await()
+        }
+
+        val first = launch { repository.insert(retentionLog("first", nowMillis)) }
+        val before = launch { repository.insert(retentionLog("before", nowMillis)) }
+        val clash = async { runCatching { repository.insert(retentionLog("taken", nowMillis)) } }
+        val after = launch { repository.insert(retentionLog("after", nowMillis)) }
+        firstWriteHeld.complete(Unit)
+        joinAll(first, before, after)
+
+        assertTrue(clash.await().isFailure, "the clashing insert still reports its failure")
+        assertEquals(setOf("taken", "first", "before", "after"), dao.getAllLogsSnapshot().map { it.uuid }.toSet())
+    }
 
     /** Retention is measured against the real clock, so these rows are stamped relative to it. */
     private fun retentionLog(uuid: String, receivedDate: Long) =

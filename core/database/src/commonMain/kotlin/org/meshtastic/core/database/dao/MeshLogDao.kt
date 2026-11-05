@@ -78,6 +78,9 @@ interface MeshLogDao {
 
     @Insert suspend fun insert(log: MeshLog)
 
+    /** Inserts [logs] in one transaction; a uuid clash aborts the whole batch. */
+    @Insert suspend fun insertAll(logs: List<MeshLog>)
+
     /**
      * Snapshot + IGNORE-insert used by DatabaseMerger to carry telemetry/position/traceroute history across transports.
      * uuid is a unique string per row, so IGNORE is just belt-and-suspenders against a rare clash.

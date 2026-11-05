@@ -75,6 +75,11 @@ class MeshMessageProcessorNodeWriteTest {
         val releaseWrites = CompletableDeferred<Unit>()
 
         val upserts = mutableMapOf<Int, Int>()
+        var liveLastHeard: Pair<Int, Int>? = null
+
+        override fun setLiveLastHeard(nodeNum: Int, lastHeard: Int) {
+            liveLastHeard = nodeNum to lastHeard
+        }
 
         fun persisted(num: Int): Node? = delegate.nodeDBbyNum.value[num]
 
@@ -200,6 +205,82 @@ class MeshMessageProcessorNodeWriteTest {
         assertEquals(2, hopsAwaySeen)
         assertNull(nodeRepository.persisted(SENDER), "the write is still held")
         nodeRepository.releaseWrites.complete(Unit)
+    }
+
+    @Test
+    fun `a packet whose handler updates the sender again writes the sender once`() = testScope.runTest {
+        val fixture = Fixture(backgroundScope, nodeRepository, dataHandler)
+        // A position or telemetry handler updates the sender a second time while the same packet is handled.
+        every { dataHandler.handleReceivedData(any(), any(), any(), any(), any()) } calls
+            {
+                fixture.nodeManager.updateNodeForSession(SENDER, fixture.session) { node -> node.copy(snr = 7f) }
+            }
+        nodeRepository.releaseWrites.complete(Unit)
+
+        launch { fixture.receive(packetFrom(SENDER, id = 1)) }
+        runCurrent()
+
+        assertEquals(1, nodeRepository.upserts[SENDER], "sender writes: ${nodeRepository.upserts}")
+        val persisted = checkNotNull(nodeRepository.persisted(SENDER))
+        assertEquals(7f, persisted.snr, "the one write carries the handler's update")
+        assertEquals(2, persisted.hopsAway, "and the packet's own update")
+        assertEquals(fixture.nodeManager.nodeDBbyNodeNum[SENDER], persisted)
+    }
+
+    @Test
+    fun `a node update from outside the packet is written while a packet is handled`() = testScope.runTest {
+        val fixture = Fixture(backgroundScope, nodeRepository, dataHandler)
+        nodeRepository.releaseWrites.complete(Unit)
+
+        fixture.nodeManager.beginNodeWriteBatch()
+        fixture.nodeManager.updateNodeForSession(OTHER_SENDER, fixture.session) { node -> node.copy(snr = 3f) }
+        runCurrent()
+        assertNull(nodeRepository.persisted(OTHER_SENDER), "held until the batch ends")
+        fixture.nodeManager.endNodeWriteBatch()
+        runCurrent()
+
+        assertEquals(3f, nodeRepository.persisted(OTHER_SENDER)?.snr)
+    }
+
+    @Test
+    fun `relayed packets inside the refresh interval write the local node once`() = testScope.runTest {
+        val fixture = Fixture(backgroundScope, nodeRepository, dataHandler)
+        nodeRepository.releaseWrites.complete(Unit)
+
+        repeat(5) { i ->
+            fixture.receive(packetFrom(SENDER, id = i + 1))
+            runCurrent()
+        }
+
+        assertEquals(1, nodeRepository.upserts[MY_NODE], "local node writes: ${nodeRepository.upserts}")
+        assertEquals(5, nodeRepository.upserts[SENDER], "every packet still writes its sender")
+        assertTrue((nodeRepository.persisted(MY_NODE)?.lastHeard ?: 0) > 0)
+    }
+
+    @Test
+    fun `lastHeard refreshes reach memory and screen at once but the database once per interval`() = testScope.runTest {
+        val fixture = Fixture(backgroundScope, nodeRepository, dataHandler)
+        nodeRepository.releaseWrites.complete(Unit)
+        var clock = 1_000_000L
+        fixture.nodeManager.clockMillis = { clock }
+
+        fixture.nodeManager.refreshLastHeard(MY_NODE, 100, fixture.session)
+        runCurrent()
+        clock += 30_000L
+        fixture.nodeManager.refreshLastHeard(MY_NODE, 130, fixture.session)
+        runCurrent()
+
+        assertEquals(130, fixture.nodeManager.nodeDBbyNodeNum[MY_NODE]?.lastHeard, "memory is current")
+        assertEquals(MY_NODE to 130, nodeRepository.liveLastHeard, "the screen is current")
+        assertEquals(1, nodeRepository.upserts[MY_NODE], "only the first refresh is written")
+        assertEquals(100, nodeRepository.persisted(MY_NODE)?.lastHeard)
+
+        clock += NodeManagerImpl.LAST_HEARD_PERSIST_INTERVAL_MS
+        fixture.nodeManager.refreshLastHeard(MY_NODE, 730, fixture.session)
+        runCurrent()
+
+        assertEquals(2, nodeRepository.upserts[MY_NODE], "a refresh after the interval is written")
+        assertEquals(730, nodeRepository.persisted(MY_NODE)?.lastHeard)
     }
 
     @Test

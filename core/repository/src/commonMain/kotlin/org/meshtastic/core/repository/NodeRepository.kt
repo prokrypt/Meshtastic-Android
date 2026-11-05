@@ -68,6 +68,12 @@ interface NodeRepository {
     fun updateLocalStats(stats: LocalStats)
 
     /**
+     * Shows [lastHeard] for [nodeNum] in [nodeDBbyNum], [ourNodeInfo] and [getNodes] ahead of the database, which may
+     * hold an older value because the write is held back. Only the newest call's node is overlaid.
+     */
+    fun setLiveLastHeard(nodeNum: Int, lastHeard: Int) {}
+
+    /**
      * Returns the node number used for log queries.
      *
      * Maps the local node's number to a constant (e.g., 0) to distinguish it from remote logs.

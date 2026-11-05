@@ -16,6 +16,9 @@
  */
 package org.meshtastic.core.data.repository
 
+import kotlinx.atomicfu.atomic
+import kotlinx.atomicfu.update
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.conflate
@@ -25,10 +28,13 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapLatest
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.yield
 import org.koin.core.annotation.Single
 import org.meshtastic.core.common.util.nowMillis
+import org.meshtastic.core.common.util.safeCatching
 import org.meshtastic.core.data.datasource.NodeInfoReadDataSource
 import org.meshtastic.core.database.DatabaseProvider
 import org.meshtastic.core.database.entity.asEntity
@@ -51,6 +57,7 @@ import org.meshtastic.proto.MeshPacket
 import org.meshtastic.proto.MyNodeInfo
 import org.meshtastic.proto.PortNum
 import org.meshtastic.proto.Telemetry
+import org.meshtastic.core.database.entity.MeshLog as MeshLogEntity
 
 /**
  * Repository implementation for managing and retrieving logs from the local database.
@@ -183,11 +190,63 @@ open class MeshLogRepositoryImpl(
 
     // Writes go through withDb so they register with the cross-transport merge drain barrier (see DatabaseProvider).
 
-    /** Persists a new log entry to the database if logging is enabled in preferences. */
+    private class PendingLog(val entity: MeshLogEntity) {
+        val written = CompletableDeferred<Unit>()
+    }
+
+    /** Rows waiting for the next group commit, oldest first. */
+    private val pendingLogs = atomic(emptyList<PendingLog>())
+
+    /** Admits one group commit at a time; rows queued while it runs go into the next one. */
+    private val logWriter = Mutex()
+
+    /**
+     * Persists a new log entry to the database if logging is enabled in preferences, and returns once it is committed.
+     *
+     * Inserts are group-committed: rows that arrive while an earlier insert is still writing (a node DB download at
+     * connect, or the radio's debug log stream) share one transaction instead of each taking its own. A lone row is
+     * written at once, as before, so nothing waits in memory for a timer.
+     */
     override suspend fun insert(log: MeshLog) = withContext(dispatchers.io) {
         if (!meshLogPrefs.loggingEnabled.value) return@withContext
-        dbManager.withDb { it.meshLogDao().insert(log.asEntity()) }
-        Unit
+        val pending = PendingLog(log.asEntity())
+        pendingLogs.update { it + pending }
+        var reachedWriter = false
+        try {
+            logWriter.withLock { if (!pending.written.isCompleted) commitPendingLogs() }
+            reachedWriter = true
+        } finally {
+            // Cancelled first: a row not written yet must not linger for a later commit, which could run against
+            // another device's DB.
+            if (!reachedWriter) pendingLogs.update { queued -> queued.filterNot { it === pending } }
+        }
+        pending.written.await()
+    }
+
+    /** Writes every queued row in one transaction. Runs under [logWriter]. */
+    private suspend fun commitPendingLogs() {
+        val batch = pendingLogs.getAndSet(emptyList())
+        if (batch.isEmpty()) return
+        try {
+            val committed = safeCatching {
+                dbManager.withDb { db -> db.meshLogDao().insertAll(batch.map { it.entity }) }
+            }
+            if (committed.isSuccess) {
+                batch.forEach { it.written.complete(Unit) }
+            } else {
+                // One bad row must not cost the others theirs: retry one by one, as inserts used to run.
+                batch.forEach { row ->
+                    safeCatching { dbManager.withDb { it.meshLogDao().insert(row.entity) } }
+                        .onSuccess { row.written.complete(Unit) }
+                        .onFailure { row.written.completeExceptionally(it) }
+                }
+            }
+        } finally {
+            // Cancelled mid-commit: hand the unwritten rows back. Their owners are queued on [logWriter] behind this
+            // commit and write them next.
+            val unwritten = batch.filterNot { it.written.isCompleted }
+            if (unwritten.isNotEmpty()) pendingLogs.update { unwritten + it }
+        }
     }
 
     /** Clears all logs from the database. */

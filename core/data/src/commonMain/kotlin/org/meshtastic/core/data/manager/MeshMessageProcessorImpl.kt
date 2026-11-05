@@ -292,22 +292,28 @@ class MeshMessageProcessorImpl(
         launchSessionBound(session, "mesh-packet emission") { serviceStateWriter.emitMeshPacket(packet) }
 
         // The in-memory update is synchronous; the database write runs on its own session lease so this handler,
-        // which holds the whole inbound pipeline, never waits on the database writer gate.
-        val from = packet.from
-        if (from == myNodeNum) {
-            nodeManager.updateNodeForSession(myNodeNum, session, channel = packet.channel) { node ->
-                applySenderPacketUpdate(node, packet, decoded).copy(lastHeard = nowSeconds.toInt())
+        // which holds the whole inbound pipeline, never waits on the database writer gate. The batch makes the sender
+        // one write per packet: a position or telemetry handler below updates the same node again.
+        nodeManager.beginNodeWriteBatch()
+        try {
+            val from = packet.from
+            if (from == myNodeNum) {
+                nodeManager.updateNodeForSession(myNodeNum, session, channel = packet.channel) { node ->
+                    applySenderPacketUpdate(node, packet, decoded).copy(lastHeard = nowSeconds.toInt())
+                }
+            } else {
+                // Any frame proves the link is alive, so the local node shares the heartbeat's throttled refresh,
+                // which updates the screen every 30 s but writes the row at most every 10 minutes.
+                refreshLocalNodeLastHeard(session, myNodeNum)
+                nodeManager.updateNodeForSession(from, session, channel = packet.channel) { node ->
+                    applySenderPacketUpdate(node, packet, decoded)
+                }
             }
-        } else {
-            nodeManager.updateNodeForSession(myNodeNum, session) { node: Node ->
-                node.copy(lastHeard = nowSeconds.toInt())
-            }
-            nodeManager.updateNodeForSession(from, session, channel = packet.channel) { node ->
-                applySenderPacketUpdate(node, packet, decoded)
-            }
-        }
 
-        dataHandler.value.handleReceivedData(packet, myNodeNum, session, log.uuid, logJob)
+            dataHandler.value.handleReceivedData(packet, myNodeNum, session, log.uuid, logJob)
+        } finally {
+            nodeManager.endNodeWriteBatch()
+        }
     }
 
     private fun applySenderPacketUpdate(node: Node, packet: MeshPacket, decoded: org.meshtastic.proto.Data): Node {
@@ -345,22 +351,22 @@ class MeshMessageProcessorImpl(
     /**
      * Refreshes the local node's [Node.lastHeard] to prove the radio link is alive.
      *
-     * Without this, [lastHeard] is only set when a [MeshPacket] arrives from another node (see
-     * [processReceivedMeshPacket]). On a quiet mesh the heartbeat cycle still exchanges data with the firmware (ToRadio
-     * heartbeat → FromRadio queueStatus every 30 s), but that data never touched [lastHeard], causing the local node to
-     * appear stale in the UI even though the connection is healthy.
+     * Every frame proves it: packets relayed from other nodes, and on a quiet mesh the heartbeat cycle (ToRadio
+     * heartbeat → FromRadio queueStatus every 30 s). Without this the local node would look stale in the UI even though
+     * the connection is healthy. Packets the local node sends itself update it directly in [processReceivedMeshPacket].
      *
-     * To avoid flooding the DB on high-frequency variants (log records arrive many times per second when debug logging
-     * is enabled), refreshes are throttled to at most once per [LOCAL_NODE_REFRESH_INTERVAL_MS]. The write is scheduled
-     * on the node's session lease like the packet updates, so the handler never waits on the database.
+     * Frames come fast (one per relayed packet on a busy mesh, and log records many times per second when debug logging
+     * is enabled), so the screen is refreshed at most once per [LOCAL_NODE_REFRESH_INTERVAL_MS], and
+     * [NodeManager.refreshLastHeard] writes the row far less often than that. Any write is scheduled on the node's
+     * session lease like the packet updates, so the handler never waits on the database.
      */
-    private fun refreshLocalNodeLastHeard(session: RadioSessionContext) {
+    private fun refreshLocalNodeLastHeard(session: RadioSessionContext, myNodeNum: Int? = nodeManager.myNodeNum.value) {
         val now = nowMillis
         val sameGeneration = lastLocalNodeRefreshGeneration == session.generation
         if (sameGeneration && now - lastLocalNodeRefreshMs < LOCAL_NODE_REFRESH_INTERVAL_MS) return
 
-        val myNum = nodeManager.myNodeNum.value ?: return
-        nodeManager.updateNodeForSession(myNum, session) { node: Node -> node.copy(lastHeard = nowSeconds.toInt()) }
+        val myNum = myNodeNum ?: return
+        nodeManager.refreshLastHeard(myNum, nowSeconds.toInt(), session)
         lastLocalNodeRefreshGeneration = session.generation
         lastLocalNodeRefreshMs = now
     }
@@ -403,8 +409,9 @@ class MeshMessageProcessorImpl(
 
     companion object {
         /**
-         * Minimum interval between local-node `lastHeard` DB writes, in milliseconds. Aligned with the heartbeat
-         * interval (30 s) so that one write per heartbeat cycle keeps the node fresh without unnecessary DB churn.
+         * Minimum interval between local-node `lastHeard` refreshes in memory and on screen, in milliseconds. Aligned
+         * with the heartbeat interval (30 s). The database write behind them is spaced further apart by
+         * [NodeManager.refreshLastHeard].
          */
         private const val LOCAL_NODE_REFRESH_INTERVAL_MS = 30_000L
     }

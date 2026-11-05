@@ -483,6 +483,7 @@ class SharedRadioInterfaceService(
 
     private val listenersInitialized = atomic(false)
     private var heartbeatJob: Job? = null
+
     // Starts one interval in the past so the first keepAlive() is never suppressed: [clockMillis] counts from service
     // creation, not from the epoch.
     private var lastHeartbeatMillis = -HEARTBEAT_INTERVAL_MILLIS
@@ -497,10 +498,9 @@ class SharedRadioInterfaceService(
      * while the device is in deep sleep (the same basis as the coroutine `delay` driving the heartbeat loop). A wall
      * clock here made [checkLiveness] count time the phone spent asleep as radio silence, so the first heartbeat after
      * any sleep longer than [LIVENESS_TIMEOUT_MILLIS] on a quiet mesh tore down a healthy BLE link and re-ran the full
-     * config download. Tests override this to a
-     * controllable clock so [onConnect], [handleFromRadio], [checkLiveness], and [keepAlive] all share one coherent
-     * time source. Not a constructor parameter to avoid breaking Koin @Single annotation generation (which would try to
-     * resolve `() -> Long` from the DI graph).
+     * config download. Tests override this to a controllable clock so [onConnect], [handleFromRadio], [checkLiveness],
+     * and [keepAlive] all share one coherent time source. Not a constructor parameter to avoid breaking Koin @Single
+     * annotation generation (which would try to resolve `() -> Long` from the DI graph).
      */
     @Volatile
     @Suppress("MemberVisibilityCanBePrivate")

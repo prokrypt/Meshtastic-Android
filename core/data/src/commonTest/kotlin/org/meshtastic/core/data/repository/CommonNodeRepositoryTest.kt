@@ -24,6 +24,7 @@ import dev.mokkery.answering.returns
 import dev.mokkery.answering.throws
 import dev.mokkery.every
 import dev.mokkery.everySuspend
+import dev.mokkery.matcher.any
 import dev.mokkery.mock
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -280,7 +281,7 @@ abstract class CommonNodeRepositoryTest {
     }
 
     @Test
-    fun `only a readings change of a stored node that is online may wait`() = runTest(testDispatcher) {
+    fun `only a readings change of a stored node may wait`() = runTest(testDispatcher) {
         val now = nowSeconds.toInt()
         val rows = MutableStateFlow(mapOf(1 to row(1, now), 2 to row(2, 100)))
         val repo = repositoryOver(rows)
@@ -288,17 +289,29 @@ abstract class CommonNodeRepositoryTest {
         val online = nodes.getValue(1)
 
         assertTrue(repo.canDeferWrite(online.copy(lastHeard = now + 30, snr = 4f)), "new readings may wait")
+        assertTrue(repo.canDeferWrite(online.copy(hopsAway = 0)), "so may a change of hops")
+        assertTrue(repo.canDeferWrite(nodes.getValue(2).copy(lastHeard = now)), "and a node heard again")
         assertFalse(
             repo.canDeferWrite(
                 online.copy(user = online.user.newBuilder().also { it.long_name = "Renamed" }.build()),
             ),
             "a name change is written at once",
         )
-        assertFalse(repo.canDeferWrite(online.copy(hopsAway = 0)), "a change of direct reach is written at once")
-        assertFalse(
-            repo.canDeferWrite(nodes.getValue(2).copy(lastHeard = now)),
-            "a node coming back online is written at once",
-        )
         assertFalse(repo.canDeferWrite(online.copy(num = 3)), "a node with no row is written at once")
+    }
+
+    @Test
+    fun `the online count and old-node lookup see held readings`() = runTest(testDispatcher) {
+        val now = nowSeconds.toInt()
+        everySuspend { readDataSource.getNodesOlderThan(any()) } returns listOf(row(2, 100).node)
+        val rows = MutableStateFlow(mapOf(1 to row(1, now), 2 to row(2, 100)))
+        val repo = repositoryOver(rows)
+        val stale = repo.nodeDBbyNum.filter { it.size == 2 }.first().getValue(2)
+        assertEquals(1, repo.onlineNodeCount.first())
+
+        repo.showUnsavedNode(stale.copy(lastHeard = now))
+
+        assertEquals(2, repo.onlineNodeCount.filter { it == 2 }.first(), "a node heard again counts as online")
+        assertEquals(emptyList(), repo.getNodesOlderThan(now - 60), "and is not offered for cleanup")
     }
 }

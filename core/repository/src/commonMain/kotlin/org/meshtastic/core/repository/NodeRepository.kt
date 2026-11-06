@@ -85,8 +85,7 @@ interface NodeRepository {
 
     /**
      * True when [node]'s write may wait in memory: its row exists and differs only in readings (position, metrics,
-     * signal, last heard) that no database filter or ordering depends on. New nodes, identity, key, name or flag
-     * changes, a node coming back online and a change of direct/relayed reach are written at once.
+     * signal, hops, last heard). New nodes and identity, key, name or flag changes are written at once.
      */
     fun canDeferWrite(node: Node): Boolean = false
 

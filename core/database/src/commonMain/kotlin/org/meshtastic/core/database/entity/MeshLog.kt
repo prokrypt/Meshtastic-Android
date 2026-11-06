@@ -97,6 +97,12 @@ data class MeshLog(
 /** A [MeshLog] with its rowid, the cursor that continues a receive-order page read. */
 data class MeshLogRow(@ColumnInfo(name = "log_rowid") val rowId: Long, @Embedded val log: MeshLog)
 
+/** See [org.meshtastic.core.database.dao.MeshLogDao.logStampFrom]. */
+data class LogStamp(
+    @ColumnInfo(name = "row_count") val rowCount: Int,
+    @ColumnInfo(name = "newest_uuid") val newestUuid: String?,
+)
+
 fun MeshLog.asExternalModel() = ExternalMeshLog(
     uuid = uuid,
     message_type = message_type,

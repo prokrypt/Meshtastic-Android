@@ -1,7 +1,9 @@
-# prokrypt fork only: builds a signed F-Droid-flavor APK from main and publishes it as a GitHub
-# Release, so Obtainium can install and update it from https://github.com/prokrypt/Meshtastic-Android.
+# prokrypt fork only: builds signed F-Droid- and Google-flavor APKs from main and publishes them as a
+# GitHub Release, so Obtainium can install and update them from https://github.com/prokrypt/Meshtastic-Android.
 # Needs two repository secrets: RELEASE_KEYSTORE_B64 (base64 of the keystore) and
 # RELEASE_KEYSTORE_PASSWORD (store and key password; key alias "release").
+# Optional secret MAPS_API_KEY: a Google Maps key for the Google flavor; without it that map is blank.
+# The Google flavor uses the tracked placeholder Firebase config, so it reports nothing to Firebase.
 name: Fork APK release
 
 on:
@@ -59,22 +61,58 @@ jobs:
             androidApp/src/main/res/values/strings.xml
           grep -n '^APPLICATION_ID=' config.properties
 
+      - name: Prepare the Google flavor
+        env:
+          MAPS_API_KEY: ${{ secrets.MAPS_API_KEY }}
+        run: |
+          # google-services needs a client entry for the package name, else the build fails.
+          python3 - "$(grep '^APPLICATION_ID=' config.properties | cut -d= -f2)" <<'PY'
+          import copy, json, sys
+          path, app_id = "androidApp/google-services.json", sys.argv[1]
+          data = json.load(open(path))
+          if all(c["client_info"]["android_client_info"]["package_name"] != app_id for c in data["client"]):
+              client = copy.deepcopy(data["client"][0])
+              client["client_info"]["android_client_info"]["package_name"] = app_id
+              data["client"].append(client)
+              json.dump(data, open(path, "w"), indent=2)
+          PY
+          if [ -n "$MAPS_API_KEY" ]; then
+            echo "MAPS_API_KEY=$MAPS_API_KEY" >> google.properties
+          else
+            echo "::warning::MAPS_API_KEY secret is not set, so the Google-flavor map will be blank"
+          fi
+          # The placeholder Firebase project can't take a Crashlytics mapping upload.
+          cat > "$RUNNER_TEMP/no-crashlytics-upload.gradle" <<'GRADLE'
+          allprojects {
+            tasks.configureEach { t -> if (t.name.startsWith('uploadCrashlyticsMappingFile')) t.enabled = false }
+          }
+          GRADLE
+
       - name: Set version
         run: |
           base=$(grep '^VERSION_NAME_BASE=' config.properties | cut -d= -f2)
           echo "VERSION_NAME=${base}-pk.${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
 
-      - name: Build the F-Droid release APK
-        run: ./gradlew :androidApp:assembleFdroidRelease
+      - name: Build the F-Droid and Google release APKs
+        run: |
+          ./gradlew :androidApp:assembleFdroidRelease :androidApp:assembleGoogleRelease \
+            --init-script "$RUNNER_TEMP/no-crashlytics-upload.gradle"
 
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          apk=$(ls androidApp/build/outputs/apk/fdroid/release/*.apk | head -n1)
-          out="meshtastic-prokrypt-${VERSION_NAME}.apk"
-          cp "$apk" "$out"
-          gh release create "v${VERSION_NAME}" "$out" \
+          outs=()
+          for flavor in google fdroid; do
+            dir="androidApp/build/outputs/apk/${flavor}/release"
+            # The universal APK runs on every phone; without ABI splits there is only one APK.
+            apk=$(ls "$dir"/*universal*.apk 2>/dev/null | head -n1)
+            [ -n "$apk" ] || apk=$(ls "$dir"/*.apk | head -n1)
+            out="meshtashtic-${flavor}-${VERSION_NAME}.apk"
+            cp "$apk" "$out"
+            outs+=("$out")
+          done
+          gh release create "v${VERSION_NAME}" "${outs[@]}" \
             --target "$GITHUB_SHA" \
             --title "v${VERSION_NAME}" \
-            --notes "Fork build of ${GITHUB_SHA::8} (F-Droid flavor, no analytics)."
+            --notes "Fork build of ${GITHUB_SHA::8}. meshtashtic-google: Google Maps and Play services. meshtashtic-fdroid: no Google services."

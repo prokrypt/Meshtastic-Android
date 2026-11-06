@@ -44,6 +44,7 @@ import org.meshtastic.core.repository.MeshLogRepository
 import org.meshtastic.core.repository.MeshNotificationManager
 import org.meshtastic.core.repository.RadioSessionContext
 import org.meshtastic.core.repository.ReceivedRadioFrame
+import org.meshtastic.core.repository.StorageWriteDeferral
 import org.meshtastic.core.testing.FakeMeshLogRepository
 import org.meshtastic.core.testing.FakeNodeRepository
 import org.meshtastic.core.testing.FakeRadioInterfaceService
@@ -122,6 +123,7 @@ class TracerouteFreshnessTest {
                 mock<MeshNotificationManager>(MockMode.autofill),
                 radio,
                 backgroundScope.asServiceScope(),
+                StorageWriteDeferral(),
             )
                 .apply {
                     setNodeDbReady(true)
@@ -160,6 +162,7 @@ class TracerouteFreshnessTest {
                 fromRadioDispatcher = mock<FromRadioPacketHandler>(MockMode.autofill),
                 radioInterfaceService = radio,
                 scope = backgroundScope.asServiceScope(),
+                writeDeferral = StorageWriteDeferral(),
             )
 
         val frame = FromRadio.Builder().also { wb -> wb.packet = tracerouteResponse() }.build().encode()

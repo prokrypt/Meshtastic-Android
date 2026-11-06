@@ -70,6 +70,11 @@ interface MeshLogRepository {
     /** Persists a new log entry to the database. */
     suspend fun insert(log: MeshLog)
 
+    /** Persists [logs] in one transaction, in order. */
+    suspend fun insertAll(logs: List<MeshLog>) {
+        logs.forEach { insert(it) }
+    }
+
     /** Clears all logs from the database. */
     suspend fun deleteAll()
 

@@ -48,6 +48,7 @@ import org.meshtastic.core.repository.NodeRepository
 import org.meshtastic.core.repository.RadioInterfaceService
 import org.meshtastic.core.repository.RadioSessionContext
 import org.meshtastic.core.repository.RadioSessionLease
+import org.meshtastic.core.repository.StorageWriteDeferral
 import org.meshtastic.proto.DeviceMetadata
 import org.meshtastic.proto.DeviceMetrics
 import org.meshtastic.proto.EnvironmentMetrics
@@ -79,7 +80,13 @@ class NodeManagerImplTest {
     @BeforeTest
     fun setUp() {
         nodeManager =
-            NodeManagerImpl(nodeRepository, serviceNotifications, radioInterfaceService, testScope.asServiceScope())
+            NodeManagerImpl(
+                nodeRepository,
+                serviceNotifications,
+                radioInterfaceService,
+                testScope.asServiceScope(),
+                StorageWriteDeferral(),
+            )
         // Override the compose-resources formatter so notification dispatch is deterministic in the
         // plain-JVM test env (getStringSuspend does not resolve here). Tests that assert "no dispatch"
         // still hold: the override only changes the title, not whether dispatch fires.

@@ -37,12 +37,13 @@ import org.meshtastic.core.common.util.nowSeconds
 import org.meshtastic.core.model.Node
 import org.meshtastic.core.repository.FromRadioPacketHandler
 import org.meshtastic.core.repository.MeshDataHandler
-import org.meshtastic.core.repository.MeshLogRepository
 import org.meshtastic.core.repository.MeshNotificationManager
 import org.meshtastic.core.repository.NodeRepository
 import org.meshtastic.core.repository.RadioSessionContext
 import org.meshtastic.core.repository.ReceivedRadioFrame
 import org.meshtastic.core.repository.ServiceRepository
+import org.meshtastic.core.repository.StorageWriteDeferral
+import org.meshtastic.core.testing.FakeMeshLogRepository
 import org.meshtastic.core.testing.FakeNodeRepository
 import org.meshtastic.core.testing.FakeRadioInterfaceService
 import org.meshtastic.proto.Data
@@ -75,13 +76,31 @@ class MeshMessageProcessorNodeWriteTest {
         val releaseWrites = CompletableDeferred<Unit>()
 
         val upserts = mutableMapOf<Int, Int>()
-        var liveLastHeard: Pair<Int, Int>? = null
+        var batchWrites = 0
 
-        override fun setLiveLastHeard(nodeNum: Int, lastHeard: Int) {
-            liveLastHeard = nodeNum to lastHeard
+        /** What the screens show ahead of the database, by node number. */
+        val shown = mutableMapOf<Int, Node>()
+
+        /** Stands in for the repository's check against the stored row; nothing may wait unless a test says so. */
+        var deferrable: (Node) -> Boolean = { false }
+
+        override fun showUnsavedNode(node: Node) {
+            shown[node.num] = node
         }
 
+        override fun forgetUnsavedNode(written: Node) {
+            shown.remove(written.num)
+        }
+
+        override fun canDeferWrite(node: Node): Boolean = deferrable(node)
+
         fun persisted(num: Int): Node? = delegate.nodeDBbyNum.value[num]
+
+        override suspend fun upsertAll(nodes: List<Node>) {
+            batchWrites++
+            releaseWrites.await()
+            nodes.forEach { delegate.upsert(it) }
+        }
 
         override suspend fun upsert(node: Node) {
             upserts[node.num] = (upserts[node.num] ?: 0) + 1
@@ -91,7 +110,13 @@ class MeshMessageProcessorNodeWriteTest {
         }
     }
 
-    private class Fixture(scope: CoroutineScope, nodeRepository: NodeRepository, dataHandler: MeshDataHandler) {
+    private class Fixture(
+        scope: CoroutineScope,
+        nodeRepository: NodeRepository,
+        dataHandler: MeshDataHandler,
+        val writeDeferral: StorageWriteDeferral = StorageWriteDeferral(),
+        val meshLogs: FakeMeshLogRepository = FakeMeshLogRepository(),
+    ) {
         val radio = FakeRadioInterfaceService(scope)
         val nodeManager =
             NodeManagerImpl(
@@ -99,6 +124,7 @@ class MeshMessageProcessorNodeWriteTest {
                 mock<MeshNotificationManager>(MockMode.autofill),
                 radio,
                 scope.asServiceScope(),
+                writeDeferral,
             )
                 .apply {
                     notificationTitleFormatter = { shortName -> "New node seen: $shortName" }
@@ -109,11 +135,12 @@ class MeshMessageProcessorNodeWriteTest {
             MeshMessageProcessorImpl(
                 nodeManager = nodeManager,
                 serviceStateWriter = mock<ServiceRepository>(MockMode.autofill),
-                meshLogRepository = lazy { mock<MeshLogRepository>(MockMode.autofill) },
+                meshLogRepository = lazy { meshLogs },
                 dataHandler = lazy { dataHandler },
                 fromRadioDispatcher = mock<FromRadioPacketHandler>(MockMode.autofill),
                 radioInterfaceService = radio,
                 scope = scope.asServiceScope(),
+                writeDeferral = writeDeferral,
             )
 
         val session: RadioSessionContext
@@ -271,7 +298,7 @@ class MeshMessageProcessorNodeWriteTest {
         runCurrent()
 
         assertEquals(130, fixture.nodeManager.nodeDBbyNodeNum[MY_NODE]?.lastHeard, "memory is current")
-        assertEquals(MY_NODE to 130, nodeRepository.liveLastHeard, "the screen is current")
+        assertEquals(130, nodeRepository.shown[MY_NODE]?.lastHeard, "the screen is current")
         assertEquals(1, nodeRepository.upserts[MY_NODE], "only the first refresh is written")
         assertEquals(100, nodeRepository.persisted(MY_NODE)?.lastHeard)
 
@@ -281,6 +308,111 @@ class MeshMessageProcessorNodeWriteTest {
 
         assertEquals(2, nodeRepository.upserts[MY_NODE], "a refresh after the interval is written")
         assertEquals(730, nodeRepository.persisted(MY_NODE)?.lastHeard)
+        assertNull(nodeRepository.shown[MY_NODE], "once written, the row itself is shown")
+    }
+
+    @Test
+    fun `out of view readings of a stored node are held and saved once when the session ends`() = testScope.runTest {
+        val fixture = Fixture(backgroundScope, nodeRepository, dataHandler)
+        nodeRepository.releaseWrites.complete(Unit)
+        fixture.receive(packetFrom(SENDER, id = 1))
+        runCurrent()
+        assertEquals(1, nodeRepository.upserts[SENDER], "in view, the packet is written at once")
+        nodeRepository.deferrable = { node -> nodeRepository.persisted(node.num) != null }
+
+        fixture.writeDeferral.setAppForeground(false)
+        repeat(3) { i ->
+            fixture.receive(packetFrom(SENDER, id = i + 2))
+            runCurrent()
+        }
+
+        assertEquals(1, nodeRepository.upserts[SENDER], "nothing more is written while held")
+        assertEquals(0, nodeRepository.batchWrites)
+        val current = checkNotNull(fixture.nodeManager.nodeDBbyNodeNum[SENDER])
+        assertEquals(current, nodeRepository.shown[SENDER], "the screens, widget and TAK see the held value")
+
+        launch { fixture.radio.disconnect() }
+        runCurrent()
+
+        assertEquals(1, nodeRepository.batchWrites, "the session's held writes are saved in one transaction")
+        assertEquals(current, nodeRepository.persisted(SENDER))
+        assertNull(nodeRepository.shown[SENDER], "once saved, the row itself is shown")
+    }
+
+    @Test
+    fun `out of view a node not yet stored is still written at once`() = testScope.runTest {
+        val fixture = Fixture(backgroundScope, nodeRepository, dataHandler)
+        nodeRepository.releaseWrites.complete(Unit)
+        nodeRepository.deferrable = { node -> nodeRepository.persisted(node.num) != null }
+        fixture.writeDeferral.setAppForeground(false)
+
+        fixture.receive(packetFrom(OTHER_SENDER, id = 1))
+        runCurrent()
+
+        assertEquals(1, nodeRepository.upserts[OTHER_SENDER])
+        assertNotNull(nodeRepository.persisted(OTHER_SENDER))
+    }
+
+    @Test
+    fun `coming back into view saves the held writes`() = testScope.runTest {
+        val fixture =
+            Fixture(backgroundScope, nodeRepository, dataHandler, writeDeferral = StorageWriteDeferral(backgroundScope))
+        nodeRepository.releaseWrites.complete(Unit)
+        fixture.receive(packetFrom(SENDER, id = 1))
+        runCurrent()
+        nodeRepository.deferrable = { node -> nodeRepository.persisted(node.num) != null }
+        fixture.writeDeferral.setAppForeground(false)
+        fixture.receive(packetFrom(SENDER, id = 2))
+        runCurrent()
+        assertEquals(1, nodeRepository.upserts[SENDER])
+        assertEquals(1, fixture.meshLogs.currentLogs.size, "the second packet's log row is held too")
+
+        fixture.writeDeferral.setAppForeground(true)
+        runCurrent()
+
+        assertEquals(fixture.nodeManager.nodeDBbyNodeNum[SENDER], nodeRepository.persisted(SENDER))
+        assertEquals(2, fixture.meshLogs.currentLogs.size, "and the held log row is saved")
+    }
+
+    @Test
+    fun `held writes are saved every hour even while out of view`() = testScope.runTest {
+        val fixture = Fixture(backgroundScope, nodeRepository, dataHandler)
+        nodeRepository.releaseWrites.complete(Unit)
+        var clock = 1_000_000L
+        fixture.nodeManager.clockMillis = { clock }
+        fixture.receive(packetFrom(SENDER, id = 1))
+        runCurrent()
+        nodeRepository.deferrable = { node -> nodeRepository.persisted(node.num) != null }
+        fixture.writeDeferral.setAppForeground(false)
+
+        fixture.receive(packetFrom(SENDER, id = 2))
+        runCurrent()
+        assertEquals(0, nodeRepository.batchWrites)
+
+        clock += StorageWriteDeferral.SAFETY_FLUSH_INTERVAL_MS
+        fixture.receive(packetFrom(SENDER, id = 3))
+        runCurrent()
+
+        assertEquals(1, nodeRepository.batchWrites)
+        assertEquals(fixture.nodeManager.nodeDBbyNodeNum[SENDER], nodeRepository.persisted(SENDER))
+    }
+
+    @Test
+    fun `out of view packet log rows are held and saved when the session ends`() = testScope.runTest {
+        val fixture = Fixture(backgroundScope, nodeRepository, dataHandler)
+        nodeRepository.releaseWrites.complete(Unit)
+        fixture.writeDeferral.setAppForeground(false)
+
+        repeat(3) { i ->
+            fixture.receive(packetFrom(SENDER, id = i + 1))
+            runCurrent()
+        }
+        assertEquals(0, fixture.meshLogs.currentLogs.size, "no log row is written while held")
+
+        launch { fixture.radio.disconnect() }
+        runCurrent()
+
+        assertEquals(3, fixture.meshLogs.currentLogs.size)
     }
 
     @Test

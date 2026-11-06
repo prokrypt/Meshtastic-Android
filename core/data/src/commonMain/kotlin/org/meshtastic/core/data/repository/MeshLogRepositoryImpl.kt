@@ -16,6 +16,7 @@
  */
 package org.meshtastic.core.data.repository
 
+import co.touchlab.kermit.Logger
 import kotlinx.atomicfu.atomic
 import kotlinx.atomicfu.update
 import kotlinx.coroutines.CompletableDeferred
@@ -221,6 +222,28 @@ open class MeshLogRepositoryImpl(
             if (!reachedWriter) pendingLogs.update { queued -> queued.filterNot { it === pending } }
         }
         pending.written.await()
+    }
+
+    /**
+     * Persists [logs] (rows held in memory while the app was out of view) through the same group commit as [insert], so
+     * they share one transaction. Returns once they are committed; a row that fails on its own is logged, not thrown.
+     */
+    override suspend fun insertAll(logs: List<MeshLog>) = withContext(dispatchers.io) {
+        if (logs.isEmpty() || !meshLogPrefs.loggingEnabled.value) return@withContext
+        val rows = logs.map { PendingLog(it.asEntity()) }
+        pendingLogs.update { it + rows }
+        var reachedWriter = false
+        try {
+            logWriter.withLock { if (rows.any { !it.written.isCompleted }) commitPendingLogs() }
+            reachedWriter = true
+        } finally {
+            if (!reachedWriter) {
+                val mine = rows.toHashSet()
+                pendingLogs.update { queued -> queued.filterNot { it in mine } }
+            }
+        }
+        val failed = rows.count { row -> safeCatching { row.written.await() }.isFailure }
+        if (failed > 0) Logger.w { "Saving held mesh log rows: $failed of ${rows.size} failed" }
     }
 
     /** Writes every queued row in one transaction. Runs under [logWriter]. */

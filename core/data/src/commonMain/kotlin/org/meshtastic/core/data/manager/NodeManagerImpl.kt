@@ -46,6 +46,7 @@ import org.meshtastic.core.repository.NodeManager
 import org.meshtastic.core.repository.NodeRepository
 import org.meshtastic.core.repository.RadioInterfaceService
 import org.meshtastic.core.repository.RadioSessionContext
+import org.meshtastic.core.repository.StorageWriteDeferral
 import org.meshtastic.core.resources.Res
 import org.meshtastic.core.resources.getStringSuspend
 import org.meshtastic.core.resources.new_node_seen
@@ -89,14 +90,33 @@ class NodeManagerImpl(
     private val serviceNotifications: MeshNotificationManager,
     private val radioInterfaceService: RadioInterfaceService,
     private val scope: ServiceScope,
+    private val writeDeferral: StorageWriteDeferral,
 ) : NodeManager {
+
+    init {
+        // Save held node writes while the ending session can still take a lease and reach its own database.
+        radioInterfaceService.addSessionEndingHook { flushDeferredWrites() }
+        writeDeferral.addFlusher(::flushDeferredWrites)
+    }
 
     // Fixed stripes bound mutex lifetime while preserving same-node persistence ordering. Hash collisions only reduce
     // parallelism; they never weaken ordering for a node.
     private val nodePersistenceLanes = List(NODE_PERSISTENCE_LANE_COUNT) { Mutex() }
 
-    private fun persistenceLane(nodeNum: Int): Mutex =
-        nodePersistenceLanes[(nodeNum.toLong() and Int.MAX_VALUE.toLong()).toInt() % nodePersistenceLanes.size]
+    private fun laneIndex(nodeNum: Int): Int =
+        (nodeNum.toLong() and Int.MAX_VALUE.toLong()).toInt() % nodePersistenceLanes.size
+
+    private fun persistenceLane(nodeNum: Int): Mutex = nodePersistenceLanes[laneIndex(nodeNum)]
+
+    /** A node whose write waits in memory, as last handed to the repository, with the session it arrived in. */
+    private data class DeferredNode(val session: RadioSessionContext?, val node: Node)
+
+    // Node writes held while the app is out of view (see StorageWriteDeferral), by node number. An entry is added and
+    // removed only inside its node's persistence lane, so it never outlives a later write of the same node.
+    private val deferredNodes = atomic(emptyMap<Int, DeferredNode>())
+
+    // When the oldest held write was held, by [clockMillis]; Long.MIN_VALUE while nothing is held.
+    private val deferredSinceMs = atomic(Long.MIN_VALUE)
 
     // A persist not yet in its lane writes the latest node once it gets there, so one per node and session is enough.
     // Each holds a session lease that teardown drains, so a slow database must not collect one per packet.
@@ -126,12 +146,21 @@ class NodeManagerImpl(
 
     override fun refreshLastHeard(nodeNum: Int, lastHeard: Int, session: RadioSessionContext) {
         val change = updateNodeState(nodeNum, channel = 0) { node -> node.copy(lastHeard = lastHeard) } ?: return
-        nodeRepository.setLiveLastHeard(nodeNum, change.next.lastHeard)
         if (!shouldPersist(change.next)) return
+        // Out of view the write is held like any other reading; in view it is shown at once and written rarely.
+        if (writeDeferral.deferring.value || isLastHeardWriteDue()) {
+            schedulePersistence(nodeNum, session)
+        } else {
+            nodeRepository.showUnsavedNode(change.next)
+        }
+    }
+
+    /** True at most once per [LAST_HEARD_PERSIST_INTERVAL_MS]; claims the slot when it returns true. */
+    private fun isLastHeardWriteDue(): Boolean {
         val now = clockMillis()
         val last = lastHeardPersistedAtMs.value
         val due = last == Long.MIN_VALUE || now - last >= LAST_HEARD_PERSIST_INTERVAL_MS || now < last
-        if (due && lastHeardPersistedAtMs.compareAndSet(last, now)) schedulePersistence(nodeNum, session)
+        return due && lastHeardPersistedAtMs.compareAndSet(last, now)
     }
 
     private fun flushBatchedPersists() {
@@ -159,7 +188,9 @@ class NodeManagerImpl(
         if (!claimed) return
         val release = { pendingPersists.update { pending -> if (pending[key] === token) pending - key else pending } }
         radioInterfaceService
-            .launchSessionWork(scope, session) { persistLatestNode(nodeNum, onLaneEntered = release) }
+            .launchSessionWork(scope, session) {
+                persistLatestNode(nodeNum, deferFor = DeferWrite(session), onLaneEntered = release)
+            }
             .invokeOnCompletion { release() }
     }
 
@@ -563,6 +594,11 @@ class NodeManagerImpl(
         // index.
         sessionGeneration.incrementAndGet()
         nodeState.value = NodeState()
+        // The session-ending save has run by now; anything still held belongs to the database being left.
+        val dropped = deferredNodes.getAndSet(emptyMap())
+        deferredSinceMs.value = Long.MIN_VALUE
+        if (dropped.isNotEmpty()) Logger.w { "Dropped ${dropped.size} held node writes on node database clear" }
+        nodeRepository.forgetUnsavedNodes()
         isNodeDbReady.value = false
         allowNodeDbWrites.value = false
         myNodeNum.value = null
@@ -707,13 +743,104 @@ class NodeManagerImpl(
         if (shouldPersist(result)) persistLatestNode(nodeNum)
     }
 
-    /** Serializes persistence per node and reads the latest in-memory value inside that lane. */
-    private suspend fun persistLatestNode(nodeNum: Int, onLaneEntered: () -> Unit = {}) =
+    /** Lets a routine write wait in memory, recording the [session] it belongs to. */
+    private class DeferWrite(val session: RadioSessionContext?)
+
+    /**
+     * Serializes persistence per node and reads the latest in-memory value inside that lane. With [deferFor], a write
+     * that only carries new readings is held while the app is out of view (see [StorageWriteDeferral]).
+     */
+    private suspend fun persistLatestNode(nodeNum: Int, deferFor: DeferWrite? = null, onLaneEntered: () -> Unit = {}) =
         persistenceLane(nodeNum).withLock {
             onLaneEntered()
             val latest = nodeState.value.index.byNum[nodeNum] ?: return@withLock
-            if (shouldPersist(latest)) nodeRepository.upsert(latest)
+            if (!shouldPersist(latest)) return@withLock
+            if (deferFor != null && writeDeferral.deferring.value && nodeRepository.canDeferWrite(latest)) {
+                holdWrite(latest, deferFor.session)
+            } else {
+                nodeRepository.upsert(latest)
+                onNodeWritten(latest)
+            }
         }
+
+    /** Must run inside [node]'s persistence lane. */
+    private fun holdWrite(node: Node, session: RadioSessionContext?) {
+        deferredNodes.update { it + (node.num to DeferredNode(session, node)) }
+        nodeRepository.showUnsavedNode(node)
+        val now = clockMillis()
+        deferredSinceMs.compareAndSet(Long.MIN_VALUE, now)
+        val since = deferredSinceMs.value
+        val due = now - since >= StorageWriteDeferral.SAFETY_FLUSH_INTERVAL_MS || now < since
+        // The CAS moves the mark forward, so only one packet starts the safety save.
+        if (due && deferredSinceMs.compareAndSet(since, now)) scope.handledLaunch { flushDeferredWrites() }
+    }
+
+    /** Must run inside [node]'s persistence lane, after [node] reached the database. */
+    private fun onNodeWritten(node: Node) {
+        deferredNodes.update { it - node.num }
+        val current = nodeState.value.index.byNum[node.num]
+        // Memory moved on while the write ran (a lastHeard refresh, which is shown rather than written): keep it shown.
+        if (current != null && current != node) {
+            nodeRepository.showUnsavedNode(current)
+        } else {
+            nodeRepository.forgetUnsavedNode(node)
+        }
+    }
+
+    override suspend fun flushDeferredWrites() {
+        val held = deferredNodes.getAndSet(emptyMap())
+        deferredSinceMs.value = Long.MIN_VALUE
+        if (held.isEmpty()) return
+        held.values
+            .groupBy { it.session }
+            .forEach { (session, nodes) ->
+                val admitted =
+                    if (session == null) {
+                        writeHeldNodes(nodes)
+                        true
+                    } else {
+                        radioInterfaceService.runWithSessionLease(session) { writeHeldNodes(nodes) }
+                    }
+                if (!admitted) {
+                    Logger.w { "Dropped ${nodes.size} held node writes: their radio session ended first" }
+                    nodes.forEach { nodeRepository.forgetUnsavedNode(it.node) }
+                }
+            }
+    }
+
+    /** Writes the newest value of each held node in one transaction, holding their lanes (in a fixed order). */
+    private suspend fun writeHeldNodes(held: List<DeferredNode>) {
+        withLanes(held.map { laneIndex(it.node.num) }.distinct().sorted()) {
+            // A held node evicted from memory, or cleared with it, is still saved from the copy taken when it was held.
+            val latest =
+                held.map { nodeState.value.index.byNum[it.node.num] ?: it.node }.filter { it.user.id.isNotEmpty() }
+            if (!allowNodeDbWrites.value) {
+                Logger.w { "Dropped ${latest.size} held node writes: node database writes are off" }
+                latest.forEach { nodeRepository.forgetUnsavedNode(it) }
+                return@withLanes
+            }
+            var saved = false
+            try {
+                nodeRepository.upsertAll(latest)
+                saved = true
+            } finally {
+                if (!saved) {
+                    // Keep them held for the next save rather than lose them; a newer hold of the same node wins.
+                    deferredNodes.update { current -> held.associateBy { it.node.num } + current }
+                    deferredSinceMs.compareAndSet(Long.MIN_VALUE, clockMillis())
+                }
+            }
+            latest.forEach(::onNodeWritten)
+        }
+    }
+
+    private suspend fun withLanes(indices: List<Int>, block: suspend () -> Unit) {
+        if (indices.isEmpty()) {
+            block()
+        } else {
+            nodePersistenceLanes[indices.first()].withLock { withLanes(indices.subList(1, indices.size), block) }
+        }
+    }
 
     override fun handleReceivedUser(
         fromNum: Int,

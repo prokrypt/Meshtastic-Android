@@ -37,6 +37,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -49,6 +50,7 @@ import org.meshtastic.core.data.datasource.NodeInfoReadDataSource
 import org.meshtastic.core.data.datasource.NodeInfoWriteDataSource
 import org.meshtastic.core.database.entity.MetadataEntity
 import org.meshtastic.core.database.entity.MyNodeEntity
+import org.meshtastic.core.database.entity.NodeEntity
 import org.meshtastic.core.database.entity.NodeWithRelations
 import org.meshtastic.core.database.entity.toEntity
 import org.meshtastic.core.datastore.LocalStatsDataSource
@@ -65,6 +67,7 @@ import org.meshtastic.proto.DeviceMetadata
 import org.meshtastic.proto.LocalStats
 import org.meshtastic.proto.User
 import kotlin.time.Duration.Companion.minutes
+import kotlin.time.Duration.Companion.seconds
 
 /** Repository for managing node-related data, including hardware info, node database, and identity. */
 @Single
@@ -99,10 +102,11 @@ class NodeRepositoryImpl(
     /** The newest local stats received in this process, ahead of the saved copy while its save is held back. */
     private val receivedLocalStats = MutableStateFlow<LocalStats?>(null)
 
-    private data class LiveLastHeard(val nodeNum: Int, val lastHeard: Int)
-
-    /** A lastHeard newer than its database row, whose write is held back (see [setLiveLastHeard]). */
-    private val liveLastHeard = MutableStateFlow<LiveLastHeard?>(null)
+    /**
+     * Nodes whose database write is held back, by number; their readings are shown over the row (see
+     * [showUnsavedNode]).
+     */
+    private val unsavedNodes = MutableStateFlow<Map<Int, Node>>(emptyMap())
 
     /** The latest local stats telemetry received from the locally connected node. */
     override val localStats: StateFlow<LocalStats> =
@@ -130,38 +134,62 @@ class NodeRepositoryImpl(
         receivedLocalStats.value = stats
     }
 
+    /** The rows as stored, before unsaved readings are laid over them. */
+    private val savedNodeDB: StateFlow<Map<Int, Node>> =
+        nodeInfoReadDataSource
+            .nodeDBbyNumFlow()
+            .toNodeModels()
+            .flowOn(dispatchers.io)
+            .conflate()
+            .stateIn(processLifecycle.coroutineScope, SharingStarted.Eagerly, emptyMap())
+
     /**
-     * A reactive map from nodeNum to [Node] objects, representing the entire mesh.
+     * A reactive map from nodeNum to [Node] objects, representing the entire mesh. Readings whose write is held back
+     * (see [showUnsavedNode]) are shown over their stored rows.
      *
      * `SharingStarted.Eagerly` over the process lifecycle means a terminal upstream failure is unrecoverable for the
      * process — re-navigation cannot restart the sharing coroutine. [NodeInfoReadDataSource] therefore restarts its DB
      * flows after a recoverable Room pool failure, so this upstream never terminates on a pool wedge (#6608).
      */
     override val nodeDBbyNum: StateFlow<Map<Int, Node>> =
-        nodeInfoReadDataSource
-            .nodeDBbyNumFlow()
-            .toNodeModels()
-            .combine(liveLastHeard) { nodes, live -> nodes.withLiveLastHeard(live) }
-            .flowOn(dispatchers.io)
+        combine(savedNodeDB, unsavedNodes) { saved, unsaved -> saved.withUnsavedReadings(unsaved) }
+            .flowOn(dispatchers.default)
             .conflate()
             .stateIn(processLifecycle.coroutineScope, SharingStarted.Eagerly, emptyMap())
 
-    override fun setLiveLastHeard(nodeNum: Int, lastHeard: Int) {
-        liveLastHeard.value = LiveLastHeard(nodeNum, lastHeard)
+    override fun showUnsavedNode(node: Node) {
+        unsavedNodes.update { it + (node.num to node) }
     }
 
-    private fun Map<Int, Node>.withLiveLastHeard(live: LiveLastHeard?): Map<Int, Node> {
-        val node = live?.let { this[it.nodeNum] }
-        val overlaid = node?.withLiveLastHeard(live)
-        return if (overlaid == null || overlaid === node) this else toMutableMap().apply { put(overlaid.num, overlaid) }
-    }
-
-    private fun Node.withLiveLastHeard(live: LiveLastHeard?): Node =
-        if (live != null && num == live.nodeNum && lastHeard < live.lastHeard) {
-            copy(lastHeard = live.lastHeard)
-        } else {
-            this
+    override fun forgetUnsavedNode(written: Node) {
+        // The value shown now is the written one or older; one shown after this call is newer and stays.
+        val shownAtWrite = unsavedNodes.value[written.num] ?: return
+        processLifecycle.coroutineScope.launch {
+            withTimeoutOrNull(UNSAVED_HANDOVER_TIMEOUT) {
+                savedNodeDB.first { saved -> saved[written.num]?.let { it.withReadingsFrom(written) == it } ?: true }
+            }
+            unsavedNodes.update { unsaved ->
+                if (unsaved[written.num] === shownAtWrite) unsaved - written.num else unsaved
+            }
         }
+    }
+
+    override fun forgetUnsavedNodes() {
+        unsavedNodes.value = emptyMap()
+    }
+
+    override fun canDeferWrite(node: Node): Boolean {
+        val saved = savedNodeDB.value[node.num] ?: return false
+        // A stored row past the online window changes onlyOnline lists and counts when it comes back, and a change of
+        // direct reach changes onlyDirect lists; both are written at once so those SQL queries stay right.
+        val keepsListPlacement =
+            saved.lastHeard > onlineTimeThreshold() && (saved.hopsAway == 0) == (node.hopsAway == 0)
+        val next = node.toEntity()
+        return keepsListPlacement && saved.toEntity().withReadingsFrom(next) == next
+    }
+
+    override suspend fun upsertAll(nodes: List<Node>) =
+        withContext(dispatchers.io) { nodeInfoWriteDataSource.upsertAll(nodes.map { it.toEntity() }) }
 
     /**
      * Maps each row to a [Node], reusing the previous [Node] for a row that is the same instance as last emission.
@@ -275,8 +303,11 @@ class NodeRepositoryImpl(
             onlyDirect = onlyDirect,
             lastHeardMin = if (onlyOnline) onlineTimeThreshold() else -1,
         )
-        .mapLatest { list -> list.map { it.toModel() }.filter { node -> node.matchesSearch(filter) } }
-        .combine(liveLastHeard) { nodes, live -> nodes.map { it.withLiveLastHeard(live) } }
+        .combine(unsavedNodes) { rows, unsaved ->
+            rows
+                .map { row -> row.toModel().let { node -> unsaved[node.num]?.let(node::withReadingsFrom) ?: node } }
+                .filter { node -> node.matchesSearch(filter) }
+        }
         .flowOn(dispatchers.io)
         .conflate()
 
@@ -290,8 +321,10 @@ class NodeRepositoryImpl(
     }
 
     /** Deletes all nodes from the database, optionally preserving favorites. */
-    override suspend fun clearNodeDB(preserveFavorites: Boolean) =
-        withContext(dispatchers.io) { nodeInfoWriteDataSource.clearNodeDB(preserveFavorites) }
+    override suspend fun clearNodeDB(preserveFavorites: Boolean) = withContext(dispatchers.io) {
+        forgetUnsavedNodes()
+        nodeInfoWriteDataSource.clearNodeDB(preserveFavorites)
+    }
 
     /** Clears the local node's connection info. */
     override suspend fun clearMyNodeInfo() = withContext(dispatchers.io) { nodeInfoWriteDataSource.clearMyNodeInfo() }
@@ -365,5 +398,58 @@ class NodeRepositoryImpl(
 
         /** How long a newer local stats report may wait in memory before it is saved. */
         val LOCAL_STATS_SAVE_INTERVAL = 10.minutes
+
+        /** Longest an unsaved value stays shown after its write, waiting for the stored row to catch up. */
+        val UNSAVED_HANDOVER_TIMEOUT = 5.seconds
     }
 }
+
+/** Lays the held-back readings of [unsaved] over the stored rows they belong to; rows without one stay as stored. */
+private fun Map<Int, Node>.withUnsavedReadings(unsaved: Map<Int, Node>): Map<Int, Node> {
+    if (unsaved.isEmpty()) return this
+    val shown = LinkedHashMap(this)
+    for ((num, node) in unsaved) shown[num]?.let { stored -> shown[num] = stored.withReadingsFrom(node) }
+    return shown
+}
+
+/**
+ * The readings a node reports over the mesh, the only fields a deferred write may change (see
+ * [NodeRepository.canDeferWrite]). Everything else — identity, keys, names, flags, notes — stays as stored.
+ */
+private fun Node.withReadingsFrom(o: Node): Node = copy(
+    position = o.position,
+    snr = o.snr,
+    rssi = o.rssi,
+    lastHeard = o.lastHeard,
+    deviceMetrics = o.deviceMetrics,
+    channel = o.channel,
+    viaMqtt = o.viaMqtt,
+    hopsAway = o.hopsAway,
+    environmentMetrics = o.environmentMetrics,
+    powerMetrics = o.powerMetrics,
+    airQualityMetrics = o.airQualityMetrics,
+    soilWaterMetrics = o.soilWaterMetrics,
+    paxcounter = o.paxcounter,
+    nodeStatus = o.nodeStatus,
+    lastTransport = o.lastTransport,
+)
+
+private fun NodeEntity.withReadingsFrom(o: NodeEntity): NodeEntity = copy(
+    position = o.position,
+    latitude = o.latitude,
+    longitude = o.longitude,
+    snr = o.snr,
+    rssi = o.rssi,
+    lastHeard = o.lastHeard,
+    deviceTelemetry = o.deviceTelemetry,
+    channel = o.channel,
+    viaMqtt = o.viaMqtt,
+    hopsAway = o.hopsAway,
+    environmentTelemetry = o.environmentTelemetry,
+    powerTelemetry = o.powerTelemetry,
+    airQualityTelemetry = o.airQualityTelemetry,
+    soilWaterTelemetry = o.soilWaterTelemetry,
+    paxcounter = o.paxcounter,
+    nodeStatus = o.nodeStatus,
+    lastTransport = o.lastTransport,
+)

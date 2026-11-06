@@ -193,10 +193,13 @@ interface NodeManager : NodeIdLookup {
     /** Ends a batch opened by [beginNodeWriteBatch] and schedules the writes it held back. */
     fun endNodeWriteBatch()
 
+    /** Saves the node writes held back by [StorageWriteDeferral] now. */
+    suspend fun flushDeferredWrites() {}
+
     /**
      * Sets [nodeNum]'s lastHeard in memory and on screen at once, but writes it to the database at most once per
-     * persist interval; any other write of the node carries the newest value with it. For the local node's link
-     * heartbeat, which would otherwise rewrite the row for every frame.
+     * persist interval (or holds it with other deferred writes); any other write of the node carries the newest value
+     * with it. For the local node's link heartbeat, which would otherwise rewrite the row for every frame.
      */
     fun refreshLastHeard(nodeNum: Int, lastHeard: Int, session: RadioSessionContext)
 

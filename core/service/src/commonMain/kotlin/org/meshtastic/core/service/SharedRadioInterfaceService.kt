@@ -22,6 +22,7 @@ import co.touchlab.kermit.Logger
 import kotlinx.atomicfu.atomic
 import kotlinx.atomicfu.locks.SynchronizedObject
 import kotlinx.atomicfu.locks.synchronized
+import kotlinx.atomicfu.update
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -379,14 +380,37 @@ class SharedRadioInterfaceService(
             true
         }
 
+    private val sessionEndingHooks = atomic(emptyList<suspend (RadioSessionContext) -> Unit>())
+
+    override fun addSessionEndingHook(hook: suspend (RadioSessionContext) -> Unit) {
+        sessionEndingHooks.update { it + hook }
+    }
+
+    /** Lets deferred work save itself while [session] still admits it. Each hook is bounded so teardown cannot hang. */
+    private suspend fun runSessionEndingHooks(session: RadioTransportSession) {
+        val stillActive =
+            synchronized(sessionCallbackLock) { sessionAdmissionOpen && activeTransportSession === session }
+        if (!stillActive) return
+        sessionEndingHooks.value.forEach { hook ->
+            val finished =
+                withTimeoutOrNull(SESSION_ENDING_HOOK_TIMEOUT_MILLIS) {
+                    safeCatching { hook(session.context) }
+                        .onFailure { Logger.e(it) { "A session-ending hook failed; its held writes may be lost" } }
+                }
+            if (finished == null) Logger.e { "A session-ending hook timed out; its held writes may be lost" }
+        }
+    }
+
     /**
      * Closes admission for [session], waits for its existing suspend operations, then publishes lifecycle completion.
      * The closed gate rejects queued callbacks and new operations immediately; the retained session token prevents a
-     * replacement generation from overlapping an admitted database commit.
+     * replacement generation from overlapping an admitted database commit. Session-ending hooks run first, while
+     * admission is still open.
      */
     private suspend fun revokeTransportSession(session: RadioTransportSession?) {
         if (session == null) return
         withContext(NonCancellable) {
+            runSessionEndingHooks(session)
             val drainWaiter =
                 synchronized(sessionCallbackLock) {
                     if (activeTransportSession !== session) return@synchronized null
@@ -570,6 +594,9 @@ class SharedRadioInterfaceService(
 
         /** How often [revokeTransportSession] reports a lease drain that has not completed. */
         private const val DRAIN_WAIT_LOG_INTERVAL_MILLIS = 15 * 1000L
+
+        /** How long one session-ending hook (a deferred-write flush) may hold up teardown. */
+        private const val SESSION_ENDING_HOOK_TIMEOUT_MILLIS = 10 * 1000L
     }
 
     private val initLock = Mutex()

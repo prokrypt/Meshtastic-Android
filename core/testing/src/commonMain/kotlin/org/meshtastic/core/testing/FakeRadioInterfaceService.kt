@@ -243,9 +243,17 @@ class FakeRadioInterfaceService(override val serviceScope: CoroutineScope = Main
         }
     }
 
+    private val sessionEndingHooks = mutableListOf<suspend (RadioSessionContext) -> Unit>()
+
+    override fun addSessionEndingHook(hook: suspend (RadioSessionContext) -> Unit) {
+        synchronized(sessionAdmissionLock) { sessionEndingHooks += hook }
+    }
+
     private suspend fun revokeActiveSession() {
         val session = synchronized(sessionAdmissionLock) { _activeSession.value } ?: return
         withContext(NonCancellable) {
+            // As in production: hooks run while the session still admits work.
+            synchronized(sessionAdmissionLock) { sessionEndingHooks.toList() }.forEach { hook -> hook(session) }
             val waiter =
                 synchronized(sessionAdmissionLock) {
                     if (_activeSession.value != session) return@synchronized null

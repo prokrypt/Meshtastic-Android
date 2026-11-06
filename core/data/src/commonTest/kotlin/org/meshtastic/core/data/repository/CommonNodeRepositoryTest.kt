@@ -36,6 +36,7 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.meshtastic.core.common.util.Exceptions
+import org.meshtastic.core.common.util.nowSeconds
 import org.meshtastic.core.data.datasource.NodeInfoReadDataSource
 import org.meshtastic.core.data.datasource.NodeInfoWriteDataSource
 import org.meshtastic.core.database.entity.MyNodeEntity
@@ -50,8 +51,10 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotSame
 import kotlin.test.assertSame
+import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.minutes
 
 abstract class CommonNodeRepositoryTest {
@@ -222,34 +225,80 @@ abstract class CommonNodeRepositoryTest {
         assertEquals(unchanged.toModel(), after.getValue(1))
     }
 
-    @Test
-    fun `a live lastHeard shows ahead of an older database row`() = runTest(testDispatcher) {
-        fun row(num: Int, lastHeard: Int) = NodeWithRelations(
-            NodeEntity(
-                num = num,
-                user = User.Builder().also { it.id = "!$num" }.build(),
-                lastHeard = lastHeard,
-            ),
-            metadata = null,
-        )
-        val rows = MutableStateFlow(mapOf(1 to row(1, 100), 2 to row(2, 100)))
+    private fun row(num: Int, lastHeard: Int, snr: Float = 0f, longName: String = "Node $num") = NodeWithRelations(
+        NodeEntity(
+            num = num,
+            user =
+            User.Builder()
+                .also {
+                    it.id = "!$num"
+                    it.long_name = longName
+                }
+                .build(),
+            lastHeard = lastHeard,
+            snr = snr,
+        ),
+        metadata = null,
+    )
+
+    private fun repositoryOver(rows: MutableStateFlow<Map<Int, NodeWithRelations>>): NodeRepositoryImpl {
         every { readDataSource.nodeDBbyNumFlow() } returns rows
-        val repo =
-            NodeRepositoryImpl(
-                lifecycleOwner.lifecycle,
-                readDataSource,
-                writeDataSource,
-                dispatchers,
-                localStatsDataSource,
+        return NodeRepositoryImpl(
+            lifecycleOwner.lifecycle,
+            readDataSource,
+            writeDataSource,
+            dispatchers,
+            localStatsDataSource,
+        )
+    }
+
+    @Test
+    fun `unsaved readings show over their row until the row catches up`() = runTest(testDispatcher) {
+        val rows = MutableStateFlow(mapOf(1 to row(1, 100), 2 to row(2, 100)))
+        val repo = repositoryOver(rows)
+        val stored = repo.nodeDBbyNum.filter { it.size == 2 }.first().getValue(1)
+
+        val unsaved =
+            stored.copy(
+                lastHeard = 160,
+                snr = 5f,
+                user = stored.user.newBuilder().also { it.long_name = "Renamed" }.build(),
             )
-        repo.nodeDBbyNum.filter { it.size == 2 }.first()
+        repo.showUnsavedNode(unsaved)
+        val shown = repo.nodeDBbyNum.filter { it[1]?.lastHeard == 160 }.first()
+        assertEquals(5f, shown[1]?.snr, "every held reading is shown")
+        assertEquals("Node 1", shown[1]?.user?.long_name, "only readings are laid over the row")
+        assertEquals(100, shown[2]?.lastHeard, "other nodes keep their row")
 
-        repo.setLiveLastHeard(1, 160)
-        val live = repo.nodeDBbyNum.filter { it[1]?.lastHeard == 160 }.first()
-        assertEquals(100, live[2]?.lastHeard, "other nodes keep their row")
+        repo.forgetUnsavedNode(unsaved)
+        assertEquals(160, repo.nodeDBbyNum.value[1]?.lastHeard, "still shown while the row is older")
 
+        rows.value = mapOf(1 to row(1, 160, snr = 5f), 2 to row(2, 100))
         rows.value = mapOf(1 to row(1, 200), 2 to row(2, 100))
         val written = repo.nodeDBbyNum.filter { it[1]?.lastHeard == 200 }.first()
-        assertEquals(200, written[1]?.lastHeard, "a newer row wins over the live value")
+        assertEquals(0f, written[1]?.snr, "once the row caught up, newer rows show as stored")
+    }
+
+    @Test
+    fun `only a readings change of a stored node that is online may wait`() = runTest(testDispatcher) {
+        val now = nowSeconds.toInt()
+        val rows = MutableStateFlow(mapOf(1 to row(1, now), 2 to row(2, 100)))
+        val repo = repositoryOver(rows)
+        val nodes = repo.nodeDBbyNum.filter { it.size == 2 }.first()
+        val online = nodes.getValue(1)
+
+        assertTrue(repo.canDeferWrite(online.copy(lastHeard = now + 30, snr = 4f)), "new readings may wait")
+        assertFalse(
+            repo.canDeferWrite(
+                online.copy(user = online.user.newBuilder().also { it.long_name = "Renamed" }.build()),
+            ),
+            "a name change is written at once",
+        )
+        assertFalse(repo.canDeferWrite(online.copy(hopsAway = 0)), "a change of direct reach is written at once")
+        assertFalse(
+            repo.canDeferWrite(nodes.getValue(2).copy(lastHeard = now)),
+            "a node coming back online is written at once",
+        )
+        assertFalse(repo.canDeferWrite(online.copy(num = 3)), "a node with no row is written at once")
     }
 }

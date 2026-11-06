@@ -83,8 +83,9 @@ jobs:
           fi
           # The placeholder Firebase project can't take a Crashlytics mapping upload.
           cat > "$RUNNER_TEMP/no-crashlytics-upload.gradle" <<'GRADLE'
-          allprojects {
-            tasks.configureEach { t -> if (t.name.startsWith('uploadCrashlyticsMappingFile')) t.enabled = false }
+          // beforeProject, not allprojects: the build uses isolated projects.
+          gradle.lifecycle.beforeProject { p ->
+            p.tasks.configureEach { t -> if (t.name.startsWith('uploadCrashlyticsMappingFile')) t.enabled = false }
           }
           GRADLE
 

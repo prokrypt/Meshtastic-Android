@@ -222,7 +222,8 @@ class PacketHandlerImpl(
                     uuid = Uuid.random().toString(),
                     message_type = "Packet",
                     received_date = nowMillis,
-                    raw_message = packet.toString(),
+                    // The text is rebuilt from fromRadio when read; storing it too made each row ~8x larger.
+                    raw_message = "",
                     fromNum = MeshLog.NODE_NUM_LOCAL,
                     portNum = packet.decoded?.portnum?.value ?: 0,
                     fromRadio = FromRadio.Builder().also { wb -> wb.packet = packet }.build(),
@@ -742,8 +743,8 @@ class PacketHandlerImpl(
     private fun insertMeshLog(packetToSave: MeshLog) {
         scope.handledLaunch {
             Logger.d {
-                "insert: ${packetToSave.message_type} = " +
-                    "${packetToSave.raw_message.toOneLineString()} from=${packetToSave.fromNum}"
+                val text = packetToSave.fromRadio.packet?.toString() ?: packetToSave.raw_message
+                "insert: ${packetToSave.message_type} = ${text.toOneLineString()} from=${packetToSave.fromNum}"
             }
             meshLogRepository.value.insert(packetToSave)
         }

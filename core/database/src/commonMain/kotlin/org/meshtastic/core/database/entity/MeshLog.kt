@@ -103,11 +103,15 @@ data class LogStamp(
     @ColumnInfo(name = "newest_uuid") val newestUuid: String?,
 )
 
+/**
+ * Packet rows written since the text column was dropped from new rows store an empty `message`: the text is the
+ * packet's own `toString()`, so it is rebuilt here from [MeshLog.fromRadio] and readers see what was stored before.
+ */
 fun MeshLog.asExternalModel() = ExternalMeshLog(
     uuid = uuid,
     message_type = message_type,
     received_date = received_date,
-    raw_message = raw_message,
+    raw_message = raw_message.ifEmpty { fromRadio.packet?.toString().orEmpty() },
     fromNum = fromNum,
     portNum = portNum,
     fromRadio = fromRadio,

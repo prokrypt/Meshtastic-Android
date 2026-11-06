@@ -179,13 +179,11 @@ class NodeRepositoryImpl(
     }
 
     override fun canDeferWrite(node: Node): Boolean {
+        // Held only while no screen is open, and saved when one opens, so the SQL-filtered and sorted node lists never
+        // see a held value. The background readers (widget, TAK, notification counts) read the overlaid map.
         val saved = savedNodeDB.value[node.num] ?: return false
-        // A stored row past the online window changes onlyOnline lists and counts when it comes back, and a change of
-        // direct reach changes onlyDirect lists; both are written at once so those SQL queries stay right.
-        val keepsListPlacement =
-            saved.lastHeard > onlineTimeThreshold() && (saved.hopsAway == 0) == (node.hopsAway == 0)
         val next = node.toEntity()
-        return keepsListPlacement && saved.toEntity().withReadingsFrom(next) == next
+        return saved.toEntity().withReadingsFrom(next) == next
     }
 
     override suspend fun upsertAll(nodes: List<Node>) =
@@ -337,8 +335,14 @@ class NodeRepositoryImpl(
     override suspend fun deleteNodes(nodeNums: List<Int>) =
         withContext(dispatchers.io) { nodeInfoWriteDataSource.deleteNodesAndMetadata(nodeNums) }
 
-    override suspend fun getNodesOlderThan(lastHeard: Int): List<Node> =
-        withContext(dispatchers.io) { nodeInfoReadDataSource.getNodesOlderThan(lastHeard).map { it.toModel() } }
+    override suspend fun getNodesOlderThan(lastHeard: Int): List<Node> = withContext(dispatchers.io) {
+        val unsaved = unsavedNodes.value
+        // A node heard since its row was saved is not old, whatever the row says.
+        nodeInfoReadDataSource
+            .getNodesOlderThan(lastHeard)
+            .map { it.toModel() }
+            .filter { node -> (unsaved[node.num]?.lastHeard ?: node.lastHeard) < lastHeard }
+    }
 
     override suspend fun getUnknownNodes(): List<Node> =
         withContext(dispatchers.io) { nodeInfoReadDataSource.getUnknownNodes().map { it.toModel() } }
@@ -352,10 +356,10 @@ class NodeRepositoryImpl(
 
     /** Flow emitting the count of nodes currently considered "online". */
     override val onlineNodeCount: Flow<Int> =
-        nodeInfoReadDataSource
-            .nodeDBbyNumFlow()
-            .mapLatest { map -> map.values.count { it.node.lastHeard > onlineTimeThreshold() } }
-            .flowOn(dispatchers.io)
+        nodeDBbyNum
+            .map { nodes -> nodes.values.count { it.lastHeard > onlineTimeThreshold() } }
+            .distinctUntilChanged()
+            .flowOn(dispatchers.default)
             .conflate()
 
     /** Flow emitting the total number of nodes in the database. */

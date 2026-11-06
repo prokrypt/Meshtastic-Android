@@ -36,6 +36,7 @@ import org.meshtastic.core.database.entity.PacketEntity
 import org.meshtastic.core.database.entity.toReaction
 import org.meshtastic.core.di.CoroutineDispatchers
 import org.meshtastic.core.model.ContactSettings
+import org.meshtastic.core.model.ConversationCounts
 import org.meshtastic.core.model.DataPacket
 import org.meshtastic.core.model.Message
 import org.meshtastic.core.model.MessageStatus
@@ -84,6 +85,12 @@ class PacketRepositoryImpl(private val dbManager: DatabaseProvider, private val 
 
     override suspend fun getUnreadCount(contact: String): Int = dbManager.withReadDb {
         it.packetDao().getUnreadCount(contact)
+    }
+
+    override suspend fun getConversationCounts(): Map<String, ConversationCounts> = dbManager.withReadDb { db ->
+        db.packetDao().getConversationCounts().associate { row ->
+            row.contactKey to ConversationCounts(messageCount = row.messageCount, unreadCount = row.unreadCount)
+        }
     }
 
     override fun getUnreadCountFlow(contact: String): Flow<Int> =

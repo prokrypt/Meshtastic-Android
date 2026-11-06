@@ -30,6 +30,7 @@ import okio.ByteString
 import org.meshtastic.core.common.util.nowMillis
 import org.meshtastic.core.database.DatabaseConstants.SQLITE_MAX_BIND_PARAMETERS
 import org.meshtastic.core.database.entity.ContactSettings
+import org.meshtastic.core.database.entity.ConversationCountsRow
 import org.meshtastic.core.database.entity.Packet
 import org.meshtastic.core.database.entity.PacketEntity
 import org.meshtastic.core.database.entity.ReactionEntity
@@ -56,12 +57,25 @@ interface PacketDao {
     )
     fun getAllPackets(portNum: Int): Flow<List<Packet>>
 
+    /**
+     * The newest text message of each conversation, newest conversation first. Only that row per conversation is read:
+     * this flow re-runs on every write to `packet` (the conversation shortcuts observe it for the service lifetime), so
+     * selecting every message and keeping the first per key decoded the whole message history each time.
+     */
     @Query(
         """
-    SELECT * FROM packet
-    WHERE (myNodeNum = 0 OR myNodeNum = (SELECT myNodeNum FROM my_node))
-        AND port_num = 1 AND filtered = 0
-    ORDER BY received_time DESC
+    SELECT p.* FROM packet p
+    INNER JOIN (
+        SELECT contact_key, MAX(received_time) as max_time
+        FROM packet
+        WHERE (myNodeNum = 0 OR myNodeNum = (SELECT myNodeNum FROM my_node))
+            AND port_num = 1 AND filtered = 0
+        GROUP BY contact_key
+    ) latest ON p.contact_key = latest.contact_key AND p.received_time = latest.max_time
+    WHERE (p.myNodeNum = 0 OR p.myNodeNum = (SELECT myNodeNum FROM my_node))
+        AND p.port_num = 1 AND p.filtered = 0
+    GROUP BY p.contact_key
+    ORDER BY p.received_time DESC
     """,
     )
     fun getContactKeys(): Flow<
@@ -107,6 +121,23 @@ interface PacketDao {
     """,
     )
     suspend fun getUnreadCount(contact: String): Int
+
+    /**
+     * [getMessageCount] and [getUnreadCount] for every conversation in one pass, so a list of conversations does not
+     * run two queries per row each time it refreshes.
+     */
+    @Query(
+        """
+    SELECT contact_key,
+        COUNT(*) AS message_count,
+        SUM(CASE WHEN read = 0 AND filtered = 0 THEN 1 ELSE 0 END) AS unread_count
+    FROM packet
+    WHERE (myNodeNum = 0 OR myNodeNum = (SELECT myNodeNum FROM my_node))
+        AND port_num = 1
+    GROUP BY contact_key
+    """,
+    )
+    suspend fun getConversationCounts(): List<ConversationCountsRow>
 
     @Query(
         """

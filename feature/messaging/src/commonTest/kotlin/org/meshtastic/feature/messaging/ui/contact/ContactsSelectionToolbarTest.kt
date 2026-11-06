@@ -75,6 +75,7 @@ class ContactsSelectionToolbarTest {
         Dispatchers.setMain(UnconfinedTestDispatcher())
         nodeRepository.setMyNodeInfo(TestDataFactory.createMyNodeInfo())
         every { connectionStateProvider.connectionState } returns MutableStateFlow(ConnectionState.Disconnected)
+        everySuspend { packetRepository.getConversationCounts() } returns emptyMap()
         every { packetRepository.getUnreadCountTotal() } returns MutableStateFlow(0)
         every { packetRepository.getContacts() } returns MutableStateFlow(emptyMap())
         every { radioConfigRepository.channelSetFlow } returns

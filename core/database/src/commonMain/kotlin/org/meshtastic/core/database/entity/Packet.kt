@@ -147,6 +147,13 @@ data class Packet(
     @ColumnInfo(name = "show_translated", defaultValue = "0") val showTranslated: Boolean = false,
 )
 
+/** One conversation's message and unread counts, one row of `PacketDao.getConversationCounts`. */
+data class ConversationCountsRow(
+    @ColumnInfo(name = "contact_key") val contactKey: String,
+    @ColumnInfo(name = "message_count") val messageCount: Int,
+    @ColumnInfo(name = "unread_count") val unreadCount: Int,
+)
+
 @Suppress("ConstructorParameterNaming")
 @Entity(tableName = "contact_settings")
 data class ContactSettings(

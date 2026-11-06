@@ -35,6 +35,9 @@ data class Contact(
     val isRetired: Boolean = false,
 )
 
+/** How many text messages a conversation holds, and how many of them are unread and not filtered. */
+data class ConversationCounts(val messageCount: Int, val unreadCount: Int)
+
 data class ContactSettings(
     val contactKey: String,
     val muteUntil: Long = 0L,

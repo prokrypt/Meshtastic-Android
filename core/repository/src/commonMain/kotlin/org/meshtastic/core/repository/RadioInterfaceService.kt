@@ -72,6 +72,13 @@ interface RadioSessionAuthority {
      */
     suspend fun runWhileSessionActive(session: RadioSessionContext, label: String, block: suspend () -> Unit): Boolean =
         runWithSessionLease(session) { block() }
+
+    /**
+     * Registers [hook] to run when a session is about to end, before admission closes, so work held for that session
+     * (deferred database writes) can still take a lease and land in the session's database. Hooks must be bounded;
+     * teardown waits for them.
+     */
+    fun addSessionEndingHook(hook: suspend (RadioSessionContext) -> Unit) {}
 }
 
 /** Writes raw protocol frames to the currently admitted transport. */

@@ -65,6 +65,7 @@ import org.meshtastic.core.repository.RadioConfigRepository
 import org.meshtastic.core.repository.RadioInterfaceService
 import org.meshtastic.core.repository.ServiceRepository
 import org.meshtastic.core.repository.SessionManager
+import org.meshtastic.core.repository.StorageWriteDeferral
 import org.meshtastic.core.repository.UiPrefs
 import org.meshtastic.core.resources.Res
 import org.meshtastic.core.resources.error_recovery_exhausted
@@ -104,6 +105,7 @@ class MeshConnectionManagerImpl(
     private val lockdownCoordinator: LockdownCoordinator,
     private val scope: ServiceScope,
     private val nodeRestartTracker: NodeRestartTracker,
+    private val writeDeferral: StorageWriteDeferral,
 ) : MeshConnectionManager {
     /**
      * Serializes [onConnectionChanged] to prevent TOCTOU races when multiple coroutines emit state transitions
@@ -517,9 +519,15 @@ class MeshConnectionManagerImpl(
         mqttManager.stop()
     }
 
+    /** Saves node and log writes held while the app is out of view (see [StorageWriteDeferral]). */
+    private fun saveHeldWrites() {
+        scope.handledLaunch { writeDeferral.flushAll() }
+    }
+
     private fun handleDeviceSleep() {
         serviceRepository.setConnectionState(ConnectionState.DeviceSleep)
         tearDownConnection()
+        saveHeldWrites()
 
         if (connectTimeMsec != 0L) {
             val now = nowMillis
@@ -548,6 +556,7 @@ class MeshConnectionManagerImpl(
         serviceRepository.setConnectionState(ConnectionState.Disconnected)
         lockdownCoordinator.onDisconnect()
         tearDownConnection()
+        saveHeldWrites()
         // A different radio may connect next, and localStats only overwrites on a fresh local_stats telemetry
         // packet - without this, signal-quality rating would silently blend the *previous* radio's noise floor into
         // the new one's readings until it gets around to reporting its own. Clearing back to "no reading yet" makes

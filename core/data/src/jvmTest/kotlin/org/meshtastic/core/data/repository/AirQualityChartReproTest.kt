@@ -42,6 +42,7 @@ import org.meshtastic.core.repository.RadioInterfaceService
 import org.meshtastic.core.repository.RadioSessionContext
 import org.meshtastic.core.repository.RadioSessionLease
 import org.meshtastic.core.repository.ServiceStateWriter
+import org.meshtastic.core.repository.StorageWriteDeferral
 import org.meshtastic.core.testing.FakeDatabaseProvider
 import org.meshtastic.core.testing.FakeMeshLogPrefs
 import org.meshtastic.proto.AirQualityMetrics
@@ -250,6 +251,7 @@ class AirQualityChartReproTest {
                     fromRadioDispatcher = mock<FromRadioPacketHandler>(MockMode.autofill),
                     radioInterfaceService = radioInterfaceService,
                     scope = backgroundScope.asServiceScope(),
+                    writeDeferral = StorageWriteDeferral(),
                 )
 
             // Arrives before MyNodeInfo resolves -> buffered, NOT written to the log table (so not orphaned in the DB).

@@ -501,6 +501,12 @@ interface NodeInfoDao {
         doUpsert(verifiedNode)
     }
 
+    /** Writes several nodes in one transaction, each through the same key checks as [upsert]. */
+    @Transaction
+    suspend fun upsertAll(nodes: List<NodeEntity>) {
+        nodes.forEach { node -> doUpsert(getVerifiedNodeForUpsert(node)) }
+    }
+
     @Upsert suspend fun putAll(nodes: List<NodeEntity>)
 
     /**

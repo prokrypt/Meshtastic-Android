@@ -17,6 +17,9 @@
 package org.meshtastic.core.data.manager
 
 import co.touchlab.kermit.Logger
+import kotlinx.atomicfu.atomic
+import kotlinx.atomicfu.update
+import kotlinx.collections.immutable.persistentListOf
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.combine
@@ -49,6 +52,7 @@ import org.meshtastic.core.repository.RadioInterfaceService
 import org.meshtastic.core.repository.RadioSessionContext
 import org.meshtastic.core.repository.ReceivedRadioFrame
 import org.meshtastic.core.repository.ServiceStateWriter
+import org.meshtastic.core.repository.StorageWriteDeferral
 import org.meshtastic.proto.FromRadio
 import org.meshtastic.proto.LogRecord
 import org.meshtastic.proto.MeshPacket
@@ -57,7 +61,7 @@ import kotlin.concurrent.Volatile
 import kotlin.uuid.Uuid
 
 /** Implementation of [MeshMessageProcessor] that handles raw radio messages and prepares mesh packets for routing. */
-@Suppress("TooManyFunctions")
+@Suppress("TooManyFunctions", "LongParameterList")
 @Single
 class MeshMessageProcessorImpl(
     private val nodeManager: NodeManager,
@@ -67,7 +71,16 @@ class MeshMessageProcessorImpl(
     private val fromRadioDispatcher: FromRadioPacketHandler,
     private val radioInterfaceService: RadioInterfaceService,
     private val scope: ServiceScope,
+    private val writeDeferral: StorageWriteDeferral,
 ) : MeshMessageProcessor {
+
+    private data class HeldLog(val log: MeshLog, val session: RadioSessionContext)
+
+    // Mesh log rows held while the app is out of view (see StorageWriteDeferral), oldest first.
+    private val heldLogs = atomic(persistentListOf<HeldLog>())
+
+    // When the oldest held row was held; Long.MIN_VALUE while nothing is held.
+    private val logsHeldSinceMs = atomic(Long.MIN_VALUE)
 
     /**
      * Epoch-millisecond timestamp of the last local-node `lastHeard` refresh. Used to throttle refreshes, and the
@@ -90,6 +103,9 @@ class MeshMessageProcessorImpl(
     }
 
     init {
+        // Save held log rows while the ending session can still take a lease and reach its own database.
+        radioInterfaceService.addSessionEndingHook { flushDeferredWrites() }
+        writeDeferral.addFlusher(::flushDeferredWrites)
         // Flush buffered packets only once BOTH the node DB is ready AND our own node number is known. Processing a
         // received packet while myNodeNum is still null would key a local packet under its raw from_num instead of
         // NODE_NUM_LOCAL (see [handleReceivedMeshPacket] / [processReceivedMeshPacket]), orphaning it from per-node
@@ -396,8 +412,45 @@ class MeshMessageProcessorImpl(
 
     private fun MeshPacket.portLabel(): String = decoded?.portnum?.name ?: "encrypted"
 
-    private fun insertMeshLog(log: MeshLog, session: RadioSessionContext): Job =
-        launchSessionBound(session, "mesh-log insert") { meshLogRepository.value.insert(log) }
+    /** Returns the write's job, or null when the row is held in memory (see [StorageWriteDeferral]). */
+    private fun insertMeshLog(log: MeshLog, session: RadioSessionContext): Job? {
+        // A traceroute's row is written at once: its handler waits for it and stores a snapshot that refers to it.
+        if (writeDeferral.deferring.value && log.portNum != PortNum.TRACEROUTE_APP.value) {
+            holdLog(log, session)
+            return null
+        }
+        return launchSessionBound(session, "mesh-log insert") { meshLogRepository.value.insert(log) }
+    }
+
+    private fun holdLog(log: MeshLog, session: RadioSessionContext) {
+        var held = 0
+        heldLogs.update { logs -> logs.adding(HeldLog(log, session)).also { held = it.size } }
+        val now = nowMillis
+        logsHeldSinceMs.compareAndSet(Long.MIN_VALUE, now)
+        val since = logsHeldSinceMs.value
+        val due =
+            held >= StorageWriteDeferral.MAX_DEFERRED_LOG_ROWS ||
+                now - since >= StorageWriteDeferral.SAFETY_FLUSH_INTERVAL_MS ||
+                now < since
+        if (due && logsHeldSinceMs.compareAndSet(since, now)) scope.handledLaunch { flushDeferredWrites() }
+    }
+
+    override suspend fun flushDeferredWrites() {
+        val held = heldLogs.getAndSet(persistentListOf())
+        logsHeldSinceMs.value = Long.MIN_VALUE
+        if (held.isEmpty()) return
+        held
+            .groupBy { it.session }
+            .forEach { (session, logs) ->
+                val admitted =
+                    radioInterfaceService.runWithSessionLease(session) {
+                        meshLogRepository.value.insertAll(logs.map { row -> row.log })
+                    }
+                if (!admitted) {
+                    Logger.w { "Dropped ${logs.size} held mesh log rows: their radio session ended first" }
+                }
+            }
+    }
 
     private fun launchSessionBound(session: RadioSessionContext, operation: String, block: suspend () -> Unit): Job =
         scope.handledLaunch(start = CoroutineStart.UNDISPATCHED) {

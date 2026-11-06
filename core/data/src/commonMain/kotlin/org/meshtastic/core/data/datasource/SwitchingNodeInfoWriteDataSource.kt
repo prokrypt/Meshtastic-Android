@@ -35,6 +35,11 @@ class SwitchingNodeInfoWriteDataSource(
         withContext(dispatchers.io) { dbManager.withDb { it.nodeInfoDao().upsert(node) } }
     }
 
+    override suspend fun upsertAll(nodes: List<NodeEntity>) {
+        if (nodes.isEmpty()) return
+        withContext(dispatchers.io) { dbManager.withDb { it.nodeInfoDao().upsertAll(nodes) } }
+    }
+
     override suspend fun installConfig(mi: MyNodeEntity, nodes: List<NodeEntity>): List<Int> =
         withContext(dispatchers.io) {
             // Throw rather than no-op when no database is available: the config-flow manager treats a

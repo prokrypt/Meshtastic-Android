@@ -47,6 +47,7 @@ import org.meshtastic.core.repository.RadioSessionContext
 import org.meshtastic.core.repository.RadioSessionLease
 import org.meshtastic.core.repository.ReceivedRadioFrame
 import org.meshtastic.core.repository.ServiceRepository
+import org.meshtastic.core.repository.StorageWriteDeferral
 import org.meshtastic.proto.Data
 import org.meshtastic.proto.FromRadio
 import org.meshtastic.proto.LogRecord
@@ -142,6 +143,7 @@ class MeshMessageProcessorImplTest {
         fromRadioDispatcher = fromRadioDispatcher,
         radioInterfaceService = radioInterfaceService,
         scope = scope.asServiceScope(),
+        writeDeferral = StorageWriteDeferral(),
     )
 
     private fun frame(bytes: ByteArray, frameSession: RadioSessionContext = session) =

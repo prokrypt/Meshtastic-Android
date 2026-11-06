@@ -68,10 +68,32 @@ interface NodeRepository {
     fun updateLocalStats(stats: LocalStats)
 
     /**
-     * Shows [lastHeard] for [nodeNum] in [nodeDBbyNum], [ourNodeInfo] and [getNodes] ahead of the database, which may
-     * hold an older value because the write is held back. Only the newest call's node is overlaid.
+     * Shows [node] in [nodeDBbyNum] and [ourNodeInfo] (and in place of its row in [getNodes]) ahead of the database,
+     * whose write for it is held back. The node manager calls this again for each newer value it holds.
      */
-    fun setLiveLastHeard(nodeNum: Int, lastHeard: Int) {}
+    fun showUnsavedNode(node: Node) {}
+
+    /**
+     * Called after [written], the node manager's newest value, reached the database: stops showing the unsaved value
+     * for its node once the row carries [written]'s readings, so the screen never steps back to an older row while the
+     * database catches up. A value shown after this call is newer and stays.
+     */
+    fun forgetUnsavedNode(written: Node) {}
+
+    /** Stops showing every unsaved value, for a cleared or switched node database. */
+    fun forgetUnsavedNodes() {}
+
+    /**
+     * True when [node]'s write may wait in memory: its row exists and differs only in readings (position, metrics,
+     * signal, last heard) that no database filter or ordering depends on. New nodes, identity, key, name or flag
+     * changes, a node coming back online and a change of direct/relayed reach are written at once.
+     */
+    fun canDeferWrite(node: Node): Boolean = false
+
+    /** Upserts [nodes] in one transaction. */
+    suspend fun upsertAll(nodes: List<Node>) {
+        nodes.forEach { upsert(it) }
+    }
 
     /**
      * Returns the node number used for log queries.

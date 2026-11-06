@@ -64,6 +64,7 @@ import org.meshtastic.core.repository.RadioConfigRepository
 import org.meshtastic.core.repository.RadioInterfaceService
 import org.meshtastic.core.repository.ServiceRepository
 import org.meshtastic.core.repository.SessionManager
+import org.meshtastic.core.repository.StorageWriteDeferral
 import org.meshtastic.core.repository.UiPrefs
 import org.meshtastic.core.testing.CapturingLogWriter
 import org.meshtastic.core.testing.FakeLockdownCoordinator
@@ -183,6 +184,7 @@ class MeshConnectionManagerImplTest {
         lockdownCoordinator,
         scope.asServiceScope(),
         NodeRestartTracker(scope),
+        StorageWriteDeferral(),
     )
 
     private fun applyConnectionState(state: ConnectionState) {

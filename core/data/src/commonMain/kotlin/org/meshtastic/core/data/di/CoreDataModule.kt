@@ -28,6 +28,7 @@ import org.meshtastic.core.common.di.PROCESS_LIFECYCLE
 import org.meshtastic.core.model.util.MeshDataMapper
 import org.meshtastic.core.model.util.NodeIdLookup
 import org.meshtastic.core.repository.ActiveConversationTracker
+import org.meshtastic.core.repository.StorageWriteDeferral
 import kotlin.time.Clock
 
 @Module
@@ -49,6 +50,19 @@ class CoreDataModule {
         applicationScope.launch {
             processLifecycle.currentStateFlow.collect { state ->
                 tracker.setAppForeground(state.isAtLeast(Lifecycle.State.STARTED))
+            }
+        }
+    }
+
+    /** Holds routine database writes while the app is out of view; see [StorageWriteDeferral]. */
+    @Single
+    fun provideStorageWriteDeferral(
+        @Provided @Named(PROCESS_LIFECYCLE) processLifecycle: Lifecycle,
+        @Provided applicationScope: ApplicationCoroutineScope,
+    ): StorageWriteDeferral = StorageWriteDeferral(applicationScope).also { deferral ->
+        applicationScope.launch {
+            processLifecycle.currentStateFlow.collect { state ->
+                deferral.setAppForeground(state.isAtLeast(Lifecycle.State.STARTED))
             }
         }
     }

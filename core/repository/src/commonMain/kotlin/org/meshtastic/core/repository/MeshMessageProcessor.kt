@@ -27,4 +27,7 @@ interface MeshMessageProcessor {
 
     /** Clears buffered packets before a device boundary is published. */
     suspend fun clearEarlyPackets()
+
+    /** Saves the mesh log rows held back by [StorageWriteDeferral] now. */
+    suspend fun flushDeferredWrites() {}
 }

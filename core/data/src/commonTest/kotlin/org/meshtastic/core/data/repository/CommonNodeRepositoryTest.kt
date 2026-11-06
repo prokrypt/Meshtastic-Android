@@ -314,4 +314,60 @@ abstract class CommonNodeRepositoryTest {
         assertEquals(2, repo.onlineNodeCount.filter { it == 2 }.first(), "a node heard again counts as online")
         assertEquals(emptyList(), repo.getNodesOlderThan(now - 60), "and is not offered for cleanup")
     }
+
+    @Test
+    fun `node lists keep the database order and search and show held readings`() = runTest(testDispatcher) {
+        val rows = MutableStateFlow(mapOf(1 to row(1, 100), 2 to row(2, 90, longName = "Hilltop"), 3 to row(3, 80)))
+        val nums = MutableStateFlow(listOf(3, 1, 2, 4))
+        every { readDataSource.getNodeNumsFlow(any(), any(), any(), any()) } returns nums
+        val repo = repositoryOver(rows)
+        val stored = repo.nodeDBbyNum.filter { it.size == 3 }.first()
+
+        assertEquals(
+            listOf(3, 1, 2),
+            repo.getNodes().first().map { it.num },
+            "SQL order; a row not mapped yet waits",
+        )
+        assertEquals(listOf(2), repo.getNodes(filter = "hill").first().map { it.num })
+        assertSame(stored.getValue(1), repo.getNodes().first()[1], "nodes come from the decoded map")
+
+        repo.showUnsavedNode(stored.getValue(1).copy(lastHeard = 150))
+        assertEquals(150, repo.getNodes().filter { it[1].lastHeard == 150 }.first()[1].lastHeard)
+
+        nums.value = listOf(2, 1)
+        assertEquals(listOf(2, 1), repo.getNodes().filter { it.size == 2 }.first().map { it.num })
+    }
+
+    @Test
+    fun `lookups by user id find the first node in map order`() = runTest(testDispatcher) {
+        val rows = MutableStateFlow(mapOf(1 to row(1, 100), 2 to row(2, 90, longName = "Hilltop")))
+        val repo = repositoryOver(rows)
+        repo.nodeDBbyNum.filter { it.size == 2 }.first()
+
+        assertEquals(2, repo.getNode("!2").num)
+        assertEquals("Hilltop", repo.getUser("!2").long_name)
+        assertEquals("Meshtastic !99", repo.getUser("!99").long_name, "an unknown id falls back")
+
+        rows.value = mapOf(1 to row(1, 100), 2 to row(2, 90, longName = "Valley"))
+        repo.nodeDBbyNum.filter { it[2]?.user?.long_name == "Valley" }.first()
+        assertEquals("Valley", repo.getUser("!2").long_name, "the index follows each new node map")
+    }
+
+    @Test
+    fun `a held reading copies only its own node`() = runTest(testDispatcher) {
+        val rows = MutableStateFlow(mapOf(1 to row(1, 100), 2 to row(2, 100), 3 to row(3, 100)))
+        val repo = repositoryOver(rows)
+        val stored = repo.nodeDBbyNum.filter { it.size == 3 }.first()
+        repo.showUnsavedNode(stored.getValue(1).copy(lastHeard = 110))
+        repo.showUnsavedNode(stored.getValue(2).copy(lastHeard = 120))
+        val before = repo.nodeDBbyNum.filter { it[2]?.lastHeard == 120 }.first()
+
+        repo.showUnsavedNode(stored.getValue(2).copy(lastHeard = 130))
+        val after = repo.nodeDBbyNum.filter { it[2]?.lastHeard == 130 }.first()
+
+        assertSame(before.getValue(1), after.getValue(1), "node 1's held reading is not copied again")
+        assertEquals(110, after.getValue(1).lastHeard)
+        assertSame(stored.getValue(3), after.getValue(3))
+        assertEquals(listOf(1, 2, 3), after.keys.toList())
+    }
 }

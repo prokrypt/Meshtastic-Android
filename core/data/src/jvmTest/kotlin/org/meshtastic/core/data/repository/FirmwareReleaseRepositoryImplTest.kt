@@ -58,7 +58,11 @@ class FirmwareReleaseRepositoryImplTest {
     private val dao
         get() = dbProvider.currentDb.value.firmwareReleaseDao()
 
-    private fun release(id: String) = NetworkFirmwareRelease(id = id, title = id, zipUrl = "https://example.com/$id")
+    private fun release(id: String) = NetworkFirmwareRelease(
+        id = id,
+        title = id,
+        zipUrl = "https://github.com/prokrypt/firmware/releases/download/$id/firmware-${id.removePrefix("v")}.json",
+    )
 
     /** A cached row old enough that the repository always refreshes. */
     private fun staleRow(id: String, type: FirmwareReleaseType) =
@@ -142,14 +146,28 @@ class FirmwareReleaseRepositoryImplTest {
     }
 
     @Test
-    fun emptyResponseLeavesCacheUntouched() = runBlocking {
+    fun emptyResponseClearsCachedReleases() = runBlocking {
+        // No published fork release: upstream rows cached before the switch must not stay on offer.
         dao.insert(staleRow("v2.7.15.567b8ea", FirmwareReleaseType.STABLE))
         serveReleases(NetworkFirmwareReleases())
 
         val emissions = repository.stableRelease.toList()
 
-        assertEquals("v2.7.15.567b8ea", emissions.last()?.id)
-        assertTrue(dao.getReleasesByType(FirmwareReleaseType.STABLE).isNotEmpty())
+        assertEquals(null, emissions.last()?.id)
+        assertTrue(dao.getReleasesByType(FirmwareReleaseType.STABLE).isEmpty())
+    }
+
+    @Test
+    fun upstreamBundledReleasesNeverSeed() = runBlocking {
+        val upstream =
+            NetworkFirmwareRelease(
+                id = "v2.7.26.54e0d8d",
+                zipUrl = "https://github.com/meshtastic/firmware/releases/download/v2.7.26.54e0d8d/manifest.json",
+            )
+        seedBundled(Releases(stable = listOf(upstream), alpha = listOf(upstream)))
+
+        assertEquals(null, repository.stableRelease.toList().first())
+        assertTrue(dao.getReleasesByType(FirmwareReleaseType.ALPHA).isEmpty())
     }
 
     @Test

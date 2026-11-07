@@ -20,6 +20,9 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.coroutineScope
 import androidx.lifecycle.repeatOnLifecycle
 import co.touchlab.kermit.Logger
+import kotlinx.atomicfu.atomic
+import kotlinx.collections.immutable.PersistentMap
+import kotlinx.collections.immutable.persistentMapOf
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -106,7 +109,7 @@ class NodeRepositoryImpl(
      * Nodes whose database write is held back, by number; their readings are shown over the row (see
      * [showUnsavedNode]).
      */
-    private val unsavedNodes = MutableStateFlow<Map<Int, Node>>(emptyMap())
+    private val unsavedNodes = MutableStateFlow<PersistentMap<Int, Node>>(persistentMapOf())
 
     /** The latest local stats telemetry received from the locally connected node. */
     override val localStats: StateFlow<LocalStats> =
@@ -151,14 +154,20 @@ class NodeRepositoryImpl(
      * process — re-navigation cannot restart the sharing coroutine. [NodeInfoReadDataSource] therefore restarts its DB
      * flows after a recoverable Room pool failure, so this upstream never terminates on a pool wedge (#6608).
      */
-    override val nodeDBbyNum: StateFlow<Map<Int, Node>> =
-        combine(savedNodeDB, unsavedNodes) { saved, unsaved -> saved.withUnsavedReadings(unsaved) }
-            .flowOn(dispatchers.default)
-            .conflate()
-            .stateIn(processLifecycle.coroutineScope, SharingStarted.Eagerly, emptyMap())
+    override val nodeDBbyNum: StateFlow<Map<Int, Node>> = flow {
+        var previous: ShownNodes? = null
+        emitAll(
+            combine(savedNodeDB, unsavedNodes) { saved, unsaved ->
+                saved.withUnsavedReadings(unsaved, previous).also { previous = ShownNodes(saved, unsaved, it) }
+            },
+        )
+    }
+        .flowOn(dispatchers.default)
+        .conflate()
+        .stateIn(processLifecycle.coroutineScope, SharingStarted.Eagerly, emptyMap())
 
     override fun showUnsavedNode(node: Node) {
-        unsavedNodes.update { it + (node.num to node) }
+        unsavedNodes.update { it.putting(node.num, node) }
     }
 
     override fun forgetUnsavedNode(written: Node) {
@@ -169,13 +178,13 @@ class NodeRepositoryImpl(
                 savedNodeDB.first { saved -> saved[written.num]?.let { it.withReadingsFrom(written) == it } ?: true }
             }
             unsavedNodes.update { unsaved ->
-                if (unsaved[written.num] === shownAtWrite) unsaved - written.num else unsaved
+                if (unsaved[written.num] === shownAtWrite) unsaved.removing(written.num) else unsaved
             }
         }
     }
 
     override fun forgetUnsavedNodes() {
-        unsavedNodes.value = emptyMap()
+        unsavedNodes.value = persistentMapOf()
     }
 
     override fun canDeferWrite(node: Node): Boolean {
@@ -238,9 +247,33 @@ class NodeRepositoryImpl(
         .map { info -> if (nodeNum == info?.myNodeNum) MeshLog.NODE_NUM_LOCAL else nodeNum }
         .distinctUntilChanged()
 
+    /** [nodeDBbyNum] by user ID, built from one map value and rebuilt only when a new one is published. */
+    private class NodesById(val source: Map<Int, Node>, val byId: Map<String, Node>)
+
+    private val nodesById = atomic(NodesById(emptyMap(), emptyMap()))
+
+    /**
+     * The first node in [nodeDBbyNum] order with this [userId], as a scan would find it. Contact lists, shortcuts and
+     * notifications look nodes up by ID once per conversation, so the index is built once per node update instead of
+     * scanning the whole mesh per lookup.
+     */
+    private fun findNodeById(userId: String): Node? {
+        val db = nodeDBbyNum.value
+        val index =
+            nodesById.value.takeIf { it.source === db }
+                ?: NodesById(
+                    db,
+                    HashMap<String, Node>(db.size).also { byId ->
+                        for (node in db.values) if (node.user.id !in byId) byId[node.user.id] = node
+                    },
+                )
+                    .also { nodesById.value = it }
+        return index.byId[userId]
+    }
+
     /** Returns the [Node] associated with a given [userId]. Falls back to a generic node if not found. */
-    override fun getNode(userId: String): Node = nodeDBbyNum.value.values.find { it.user.id == userId }
-        ?: Node(num = NodeAddress.idToNum(userId) ?: 0, user = getUser(userId))
+    override fun getNode(userId: String): Node =
+        findNodeById(userId) ?: Node(num = NodeAddress.idToNum(userId) ?: 0, user = getUser(userId))
 
     /** Returns the [User] info for a given [nodeNum]. */
     override fun getUser(nodeNum: Int): User = getUser(NodeAddress.numToDefaultId(nodeNum))
@@ -249,7 +282,7 @@ class NodeRepositoryImpl(
 
     /** Returns the [User] info for a given [userId]. Falls back to a generic user if not found. */
     override fun getUser(userId: String): User {
-        val found = nodeDBbyNum.value.values.find { it.user.id == userId }?.user
+        val found = findNodeById(userId)?.user
         if (found != null && found.long_name.isNotBlank() && found.short_name.isNotBlank()) {
             return found
         }
@@ -287,7 +320,11 @@ class NodeRepositoryImpl(
                 .build()
     }
 
-    /** Returns a flow of nodes filtered and sorted according to the parameters. */
+    /**
+     * Returns a flow of nodes filtered and sorted according to the parameters. SQL picks and orders the node numbers
+     * from the stored rows as before; the nodes themselves come from [nodeDBbyNum], already decoded and carrying any
+     * held readings, so a packet costs a numbers-only query instead of decoding every row again.
+     */
     override fun getNodes(
         sort: NodeSortOption,
         filter: String,
@@ -295,18 +332,17 @@ class NodeRepositoryImpl(
         onlyOnline: Boolean,
         onlyDirect: Boolean,
     ): Flow<List<Node>> = nodeInfoReadDataSource
-        .getNodesFlow(
+        .getNodeNumsFlow(
             sort = sort.sqlValue,
             includeUnknown = includeUnknown,
             onlyDirect = onlyDirect,
             lastHeardMin = if (onlyOnline) onlineTimeThreshold() else -1,
         )
-        .combine(unsavedNodes) { rows, unsaved ->
-            rows
-                .map { row -> row.toModel().let { node -> unsaved[node.num]?.let(node::withReadingsFrom) ?: node } }
-                .filter { node -> node.matchesSearch(filter) }
+        .combine(nodeDBbyNum) { nums, nodes ->
+            // A row the in-memory map has not caught up with yet joins on its next emission.
+            nums.mapNotNull { num -> nodes[num]?.takeIf { it.matchesSearch(filter) } }
         }
-        .flowOn(dispatchers.io)
+        .flowOn(dispatchers.default)
         .conflate()
 
     /** Upserts a [Node] to the database. */
@@ -363,12 +399,7 @@ class NodeRepositoryImpl(
             .conflate()
 
     /** Flow emitting the total number of nodes in the database. */
-    override val totalNodeCount: Flow<Int> =
-        nodeInfoReadDataSource
-            .nodeDBbyNumFlow()
-            .mapLatest { map -> map.values.count() }
-            .flowOn(dispatchers.io)
-            .conflate()
+    override val totalNodeCount: Flow<Int> = savedNodeDB.map { it.size }.distinctUntilChanged()
 
     override suspend fun setNodeNotes(num: Int, notes: String) =
         withContext(dispatchers.io) { nodeInfoWriteDataSource.setNodeNotes(num, notes) }
@@ -408,11 +439,30 @@ class NodeRepositoryImpl(
     }
 }
 
-/** Lays the held-back readings of [unsaved] over the stored rows they belong to; rows without one stay as stored. */
-private fun Map<Int, Node>.withUnsavedReadings(unsaved: Map<Int, Node>): Map<Int, Node> {
+/** One emission of [NodeRepositoryImpl.nodeDBbyNum] and the inputs it was built from. */
+private class ShownNodes(val saved: Map<Int, Node>, val unsaved: Map<Int, Node>, val shown: Map<Int, Node>)
+
+/**
+ * Lays the held-back readings of [unsaved] over the stored rows they belong to; rows without one stay as stored.
+ *
+ * A row whose stored node and held node are the same instances as in [previous] keeps [previous]'s shown node, so a
+ * packet copies only its own sender rather than every held node in the mesh.
+ */
+private fun Map<Int, Node>.withUnsavedReadings(unsaved: Map<Int, Node>, previous: ShownNodes?): Map<Int, Node> {
     if (unsaved.isEmpty()) return this
-    val shown = LinkedHashMap(this)
-    for ((num, node) in unsaved) shown[num]?.let { stored -> shown[num] = stored.withReadingsFrom(node) }
+    val shown = LinkedHashMap<Int, Node>(size)
+    for ((num, stored) in this) {
+        val held = unsaved[num]
+        shown[num] =
+            when {
+                held == null -> stored
+
+                previous != null && previous.saved[num] === stored && previous.unsaved[num] === held ->
+                    previous.shown.getValue(num)
+
+                else -> stored.withReadingsFrom(held)
+            }
+    }
     return shown
 }
 

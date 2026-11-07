@@ -17,6 +17,7 @@
 package org.meshtastic.core.data.datasource
 
 import kotlinx.coroutines.flow.Flow
+import org.meshtastic.core.database.dao.NodeInfoDao
 import org.meshtastic.core.database.entity.MyNodeEntity
 import org.meshtastic.core.database.entity.NodeEntity
 import org.meshtastic.core.database.entity.NodeWithRelations
@@ -26,12 +27,8 @@ interface NodeInfoReadDataSource {
 
     fun nodeDBbyNumFlow(): Flow<Map<Int, NodeWithRelations>>
 
-    fun getNodesFlow(
-        sort: String,
-        includeUnknown: Boolean,
-        onlyDirect: Boolean,
-        lastHeardMin: Int,
-    ): Flow<List<NodeWithRelations>>
+    /** The numbers of the nodes matching these filters, in list order; see [NodeInfoDao.getNodeNums]. */
+    fun getNodeNumsFlow(sort: String, includeUnknown: Boolean, onlyDirect: Boolean, lastHeardMin: Int): Flow<List<Int>>
 
     suspend fun getNodesOlderThan(lastHeard: Int): List<NodeEntity>
 

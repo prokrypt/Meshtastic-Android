@@ -19,6 +19,7 @@ package org.meshtastic.core.repository
 import androidx.paging.PagingData
 import kotlinx.coroutines.flow.Flow
 import org.meshtastic.core.model.ContactSettings
+import org.meshtastic.core.model.ConversationCounts
 import org.meshtastic.core.model.DataPacket
 import org.meshtastic.core.model.Message
 import org.meshtastic.core.model.MessageStatus
@@ -60,6 +61,9 @@ interface PacketRepository {
 
     /** Returns the count of unread messages in a conversation. */
     suspend fun getUnreadCount(contact: String): Int
+
+    /** [getMessageCount] and [getUnreadCount] of every conversation, by contact key, from one query. */
+    suspend fun getConversationCounts(): Map<String, ConversationCounts>
 
     /** Reactive flow of the unread message count in a conversation. */
     fun getUnreadCountFlow(contact: String): Flow<Int>

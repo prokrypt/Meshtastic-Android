@@ -21,6 +21,7 @@ import app.cash.turbine.test
 import dev.mokkery.MockMode
 import dev.mokkery.answering.returns
 import dev.mokkery.every
+import dev.mokkery.everySuspend
 import dev.mokkery.mock
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -64,6 +65,7 @@ class ContactsViewModelTest {
         Dispatchers.setMain(testDispatcher)
 
         every { connectionStateProvider.connectionState } returns MutableStateFlow(ConnectionState.Disconnected)
+        everySuspend { packetRepository.getConversationCounts() } returns emptyMap()
         every { packetRepository.getUnreadCountTotal() } returns MutableStateFlow(0)
         every { radioConfigRepository.channelSetFlow } returns MutableStateFlow(ChannelSet.Builder().build())
 

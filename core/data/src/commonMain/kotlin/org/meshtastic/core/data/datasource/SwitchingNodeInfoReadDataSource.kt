@@ -39,22 +39,22 @@ class SwitchingNodeInfoReadDataSource(private val dbManager: DatabaseProvider) :
         .observeCurrentDb("NodeInfoDataSource.nodeDBbyNumFlow") { db -> db.nodeInfoDao().observeNodeDBbyNum() }
         .retryOnDbPoolFailure("nodeDBbyNum")
 
-    override fun getNodesFlow(
+    override fun getNodeNumsFlow(
         sort: String,
         includeUnknown: Boolean,
         onlyDirect: Boolean,
         lastHeardMin: Int,
-    ): Flow<List<NodeWithRelations>> = dbManager
-        .observeCurrentDb("NodeInfoDataSource.getNodesFlow") { db ->
+    ): Flow<List<Int>> = dbManager
+        .observeCurrentDb("NodeInfoDataSource.getNodeNumsFlow") { db ->
             db.nodeInfoDao()
-                .getNodes(
+                .getNodeNums(
                     sort = sort,
                     includeUnknown = includeUnknown,
                     onlyDirect = onlyDirect,
                     lastHeardMin = lastHeardMin,
                 )
         }
-        .retryOnDbPoolFailure("getNodes")
+        .retryOnDbPoolFailure("getNodeNums")
 
     override suspend fun getNodesOlderThan(lastHeard: Int): List<NodeEntity> = dbManager.withReadDb {
         it.nodeInfoDao().getNodesOlderThan(lastHeard)

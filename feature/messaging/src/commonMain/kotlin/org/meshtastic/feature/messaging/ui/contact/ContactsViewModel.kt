@@ -118,6 +118,8 @@ class ContactsViewModel(
                     val data = DataPacket(bytes = null, dataType = 1, time = 0L, channel = ch)
                     contactKey to data
                 }
+            // Every conversation's counts from one query, rather than two queries per row on each refresh.
+            val counts = packetRepository.getConversationCounts()
 
             (contacts + (placeholder - contacts.keys)).entries.collectionsMap { entry ->
                 val contactKey = entry.key
@@ -156,8 +158,8 @@ class ContactsViewModel(
                     longName = longName,
                     lastMessageTime = if (packetData.time != 0L) packetData.time else null,
                     lastMessageText = if (fromLocal) packetData.text else "$shortName: ${packetData.text}",
-                    unreadCount = packetRepository.getUnreadCount(contactKey),
-                    messageCount = packetRepository.getMessageCount(contactKey),
+                    unreadCount = counts[contactKey]?.unreadCount ?: 0,
+                    messageCount = counts[contactKey]?.messageCount ?: 0,
                     isMuted = settings[contactKey]?.isMuted == true,
                     draft = settings[contactKey]?.draft.orEmpty(),
                     isPinned = settings[contactKey]?.pinned == true,

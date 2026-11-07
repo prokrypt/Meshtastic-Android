@@ -42,6 +42,52 @@ interface NodeInfoDao {
 
         /** SQLite has a limit of ~999 bind parameters per query. */
         const val MAX_BIND_PARAMS = 999
+
+        /** The local node's position, for the distance sort of [getNodes] and [getNodeNums]. */
+        const val NODE_LIST_WITH =
+            """
+    WITH OurNode AS (
+        SELECT latitude, longitude
+        FROM nodes
+        WHERE num = (SELECT myNodeNum FROM my_node LIMIT 1)
+    )
+    """
+
+        /** The filters and sort shared by [getNodes] and [getNodeNums], after their `SELECT ... FROM nodes`. */
+        const val NODE_LIST_WHERE_ORDER =
+            """
+    WHERE (:includeUnknown = 1 OR short_name IS NOT NULL)
+        AND (:lastHeardMin = -1 OR last_heard >= :lastHeardMin)
+        AND (:onlyDirect = 0 OR (hops_away = 0 AND via_mqtt = 0) OR num = (SELECT myNodeNum FROM my_node LIMIT 1))
+    ORDER BY CASE
+        WHEN num = (SELECT myNodeNum FROM my_node LIMIT 1) THEN 0
+        ELSE 1
+    END,
+    CASE
+        WHEN :sort = 'last_heard' THEN last_heard * -1
+        WHEN :sort = 'alpha' THEN UPPER(CASE WHEN TRIM(display_name) <> '' THEN display_name ELSE long_name END)
+        WHEN :sort = 'distance' THEN
+            CASE
+                WHEN latitude IS NULL OR longitude IS NULL OR
+                    (latitude = 0.0 AND longitude = 0.0) THEN 999999999
+                ELSE
+                    (latitude - (SELECT latitude FROM OurNode)) *
+                    (latitude - (SELECT latitude FROM OurNode)) +
+                    (longitude - (SELECT longitude FROM OurNode)) *
+                    (longitude - (SELECT longitude FROM OurNode))
+            END
+        WHEN :sort = 'hops_away' THEN
+            CASE
+                WHEN hops_away = -1 THEN 999999999
+                ELSE hops_away
+            END
+        WHEN :sort = 'channel' THEN channel
+        WHEN :sort = 'via_mqtt' THEN via_mqtt
+        WHEN :sort = 'via_favorite' THEN is_favorite * -1
+        ELSE 0
+    END ASC,
+    last_heard DESC
+    """
     }
 
     /**
@@ -373,47 +419,7 @@ interface NodeInfoDao {
     //
     // Direct means hops_away = 0 AND NOT via_mqtt: an MQTT-bridged node carries the hop count the uplink gateway
     // heard, not ours, so zero hops there is no claim about our radio. The row renderers read it the same way.
-    @Query(
-        """
-    WITH OurNode AS (
-        SELECT latitude, longitude
-        FROM nodes
-        WHERE num = (SELECT myNodeNum FROM my_node LIMIT 1)
-    )
-    SELECT * FROM nodes
-    WHERE (:includeUnknown = 1 OR short_name IS NOT NULL)
-        AND (:lastHeardMin = -1 OR last_heard >= :lastHeardMin)
-        AND (:onlyDirect = 0 OR (hops_away = 0 AND via_mqtt = 0) OR num = (SELECT myNodeNum FROM my_node LIMIT 1))
-    ORDER BY CASE
-        WHEN num = (SELECT myNodeNum FROM my_node LIMIT 1) THEN 0
-        ELSE 1
-    END,
-    CASE
-        WHEN :sort = 'last_heard' THEN last_heard * -1
-        WHEN :sort = 'alpha' THEN UPPER(CASE WHEN TRIM(display_name) <> '' THEN display_name ELSE long_name END)
-        WHEN :sort = 'distance' THEN
-            CASE
-                WHEN latitude IS NULL OR longitude IS NULL OR
-                    (latitude = 0.0 AND longitude = 0.0) THEN 999999999
-                ELSE
-                    (latitude - (SELECT latitude FROM OurNode)) *
-                    (latitude - (SELECT latitude FROM OurNode)) +
-                    (longitude - (SELECT longitude FROM OurNode)) *
-                    (longitude - (SELECT longitude FROM OurNode))
-            END
-        WHEN :sort = 'hops_away' THEN
-            CASE
-                WHEN hops_away = -1 THEN 999999999
-                ELSE hops_away
-            END
-        WHEN :sort = 'channel' THEN channel
-        WHEN :sort = 'via_mqtt' THEN via_mqtt
-        WHEN :sort = 'via_favorite' THEN is_favorite * -1
-        ELSE 0
-    END ASC,
-    last_heard DESC
-    """,
-    )
+    @Query(NODE_LIST_WITH + "SELECT * FROM nodes" + NODE_LIST_WHERE_ORDER)
     @Transaction
     fun getNodes(
         sort: String,
@@ -421,6 +427,13 @@ interface NodeInfoDao {
         onlyDirect: Boolean,
         lastHeardMin: Int,
     ): Flow<List<NodeWithRelations>>
+
+    /**
+     * The numbers of the nodes [getNodes] returns, in the same order. Reads no blobs, so a list screen can take the
+     * nodes themselves from the decoded in-memory node database instead of decoding every row on every change.
+     */
+    @Query(NODE_LIST_WITH + "SELECT num FROM nodes" + NODE_LIST_WHERE_ORDER)
+    fun getNodeNums(sort: String, includeUnknown: Boolean, onlyDirect: Boolean, lastHeardMin: Int): Flow<List<Int>>
 
     @Transaction
     suspend fun clearNodeInfo(preserveFavorites: Boolean) {

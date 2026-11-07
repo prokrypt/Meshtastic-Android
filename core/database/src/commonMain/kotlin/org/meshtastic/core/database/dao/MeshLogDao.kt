@@ -23,6 +23,7 @@ import androidx.room3.Query
 import androidx.room3.Transaction
 import kotlinx.coroutines.flow.Flow
 import org.meshtastic.core.database.DatabaseConstants.SQLITE_MAX_BIND_PARAMETERS
+import org.meshtastic.core.database.entity.LogStamp
 import org.meshtastic.core.database.entity.MeshLog
 import org.meshtastic.core.database.entity.MeshLogRow
 
@@ -75,6 +76,38 @@ interface MeshLogDao {
         """,
     )
     fun getLogsOnPort(portNum: Int, excludeFromNum: Int, maxItem: Int): Flow<List<MeshLog>>
+
+    /** Suspend snapshot variant of [getLogsOnPort]. */
+    @Query(
+        """
+        SELECT * FROM log
+        WHERE port_num = :portNum AND from_num != :excludeFromNum
+        ORDER BY received_date DESC LIMIT :maxItem
+        """,
+    )
+    suspend fun getLogsOnPortSnapshot(portNum: Int, excludeFromNum: Int, maxItem: Int): List<MeshLog>
+
+    /**
+     * A cheap stamp of [fromNum]'s log rows that changes whenever one of them is inserted or deleted: their count, and
+     * the uuid of the newest row by rowid. Log rows are never updated in place. Reads only the from_num index plus one
+     * row, so [observeLogsFrom] can skip the full read when a packet from another node invalidates the table.
+     */
+    @Query(
+        """
+        SELECT (SELECT count(*) FROM log WHERE from_num = :fromNum) AS row_count,
+            (SELECT uuid FROM log WHERE from_num = :fromNum ORDER BY rowid DESC LIMIT 1) AS newest_uuid
+        """,
+    )
+    fun logStampFrom(fromNum: Int): Flow<LogStamp>
+
+    /** [logStampFrom] for every row on [portNum]; drives [observeLogsOnPort]. */
+    @Query(
+        """
+        SELECT (SELECT count(*) FROM log WHERE port_num = :portNum) AS row_count,
+            (SELECT uuid FROM log WHERE port_num = :portNum ORDER BY rowid DESC LIMIT 1) AS newest_uuid
+        """,
+    )
+    fun logStampOnPort(portNum: Int): Flow<LogStamp>
 
     @Insert suspend fun insert(log: MeshLog)
 

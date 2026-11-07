@@ -438,6 +438,51 @@ abstract class CommonPacketDaoTest {
     }
 
     @Test
+    fun testGetConversationCountsMatchesThePerConversationCounts() = runTest {
+        createDb()
+        packetDao.clearUnreadCount(testContactKeys.first(), nowMillis + SAMPLE_SIZE)
+
+        val counts = packetDao.getConversationCounts().associateBy { it.contactKey }
+
+        assertEquals(testContactKeys.toSet(), counts.keys)
+        testContactKeys.forEach { key ->
+            assertEquals(packetDao.getMessageCount(key), counts.getValue(key).messageCount)
+            assertEquals(packetDao.getUnreadCount(key), counts.getValue(key).unreadCount)
+        }
+        assertEquals(0, counts.getValue(testContactKeys.first()).unreadCount)
+        assertEquals(SAMPLE_SIZE, counts.getValue(testContactKeys.last()).unreadCount)
+    }
+
+    @Test
+    fun testGetContactKeysHoldsEachConversationsNewestMessageNewestFirst() = runTest {
+        createDb()
+        val older = testContactKeys.first()
+        val newer = testContactKeys.last()
+        packetDao.insert(
+            Packet(
+                uuid = 0L,
+                myNodeNum = myNodeNum,
+                port_num = PortNum.TEXT_MESSAGE_APP.value,
+                contact_key = older,
+                received_time = nowMillis + SAMPLE_SIZE * 10L,
+                read = true,
+                data =
+                DataPacket(
+                    to = NodeAddress.ID_BROADCAST,
+                    bytes = "Newest".encodeToByteArray().toByteString(),
+                    dataType = PortNum.TEXT_MESSAGE_APP.value,
+                ),
+            ),
+        )
+
+        val contacts = packetDao.getContactKeys().first()
+
+        assertEquals(listOf(older, newer), contacts.keys.toList())
+        assertEquals("Newest", contacts.getValue(older).data.text)
+        assertEquals("Message ${SAMPLE_SIZE - 1}!", contacts.getValue(newer).data.text)
+    }
+
+    @Test
     fun testGetWaypoints() = runTest {
         createDb()
         val waypointPacket =

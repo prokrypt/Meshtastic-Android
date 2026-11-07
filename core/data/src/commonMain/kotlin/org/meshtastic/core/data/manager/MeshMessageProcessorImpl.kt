@@ -298,7 +298,8 @@ class MeshMessageProcessorImpl(
                 uuid = Uuid.random().toString(),
                 message_type = "Packet",
                 received_date = nowMillis,
-                raw_message = packet.toString(),
+                // The text is rebuilt from fromRadio when read; storing it too made each row ~8x larger.
+                raw_message = "",
                 fromNum = if (packet.from == myNodeNum) MeshLog.NODE_NUM_LOCAL else packet.from,
                 portNum = decoded.portnum.value,
                 fromRadio = FromRadio.Builder().also { wb -> wb.packet = packet }.build(),

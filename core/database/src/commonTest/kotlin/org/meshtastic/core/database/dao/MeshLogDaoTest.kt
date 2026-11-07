@@ -23,7 +23,11 @@ import kotlinx.coroutines.test.runTest
 import org.meshtastic.core.database.DatabaseConstants.SQLITE_MAX_BIND_PARAMETERS
 import org.meshtastic.core.database.MeshtasticDatabase
 import org.meshtastic.core.database.entity.MeshLog
+import org.meshtastic.core.database.entity.asExternalModel
 import org.meshtastic.core.database.getInMemoryDatabaseBuilder
+import org.meshtastic.proto.Data
+import org.meshtastic.proto.FromRadio
+import org.meshtastic.proto.MeshPacket
 import org.meshtastic.proto.PortNum
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
@@ -63,6 +67,28 @@ class MeshLogDaoTest {
     @AfterTest
     fun closeDb() {
         database.close()
+    }
+
+    @Test
+    fun aPacketRowStoredWithoutTextReadsBackWithThePacketText() = runTest {
+        val packet =
+            MeshPacket.Builder()
+                .also {
+                    it.from = testFromNum
+                    it.id = 1234
+                    it.decoded = Data.Builder().also { d -> d.portnum = PortNum.TELEMETRY_APP }.build()
+                }
+                .build()
+        meshLogDao.insert(
+            logEntry("packet", time = 100).copy(fromRadio = FromRadio.Builder().also { it.packet = packet }.build()),
+        )
+        meshLogDao.insert(logEntry("text", time = 200).copy(raw_message = "kept as stored"))
+
+        val logs = meshLogDao.getLogsSnapshot(testFromNum, -1, Int.MAX_VALUE).associateBy { it.uuid }
+
+        assertEquals("", logs.getValue("packet").raw_message)
+        assertEquals(packet.toString(), logs.getValue("packet").asExternalModel().raw_message)
+        assertEquals("kept as stored", logs.getValue("text").asExternalModel().raw_message)
     }
 
     @Test

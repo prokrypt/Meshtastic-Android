@@ -99,6 +99,11 @@ jobs:
           ./gradlew :androidApp:assembleFdroidRelease :androidApp:assembleGoogleRelease \
             --init-script "$RUNNER_TEMP/no-crashlytics-upload.gradle"
 
+      - name: Write release notes
+        run: |
+          git fetch --no-tags https://github.com/meshtastic/Meshtastic-Android main:refs/remotes/upstream/main
+          .github/scripts/fork-release-notes.sh HEAD upstream/main | tee "$RUNNER_TEMP/notes.md"
+
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -116,4 +121,4 @@ jobs:
           gh release create "v${VERSION_NAME}" "${outs[@]}" \
             --target "$GITHUB_SHA" \
             --title "v${VERSION_NAME}" \
-            --notes "Fork build of ${GITHUB_SHA::8}. meshtashtic-google: Google Maps and Play services. meshtashtic-fdroid: no Google services."
+            --notes-file "$RUNNER_TEMP/notes.md"

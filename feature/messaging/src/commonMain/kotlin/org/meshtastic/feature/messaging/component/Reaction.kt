@@ -224,7 +224,8 @@ internal fun ReactionDialog(
     val filteredReactions = selectedEmoji?.let { groupedEmojis[it] ?: emptyList() } ?: reactions
 
     var showStatusDialog by remember { mutableStateOf<Reaction?>(null) }
-    showStatusDialog?.let { reaction ->
+    showStatusDialog?.let { opened ->
+        val reaction = reactions.find { it.packetId != 0 && it.packetId == opened.packetId } ?: opened
         val isDirectMessage = NodeAddress.fromString(reaction.to) !is NodeAddress.Broadcast
         val (title, text) =
             getMessageStatusStringRes(

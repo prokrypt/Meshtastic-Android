@@ -64,7 +64,8 @@ class MeshtasticDatabaseMigrationTest {
     @Test
     fun migrateAll() = runTest {
         helper.createDatabase(EARLIEST_SCHEMA_VERSION).close()
-        // Every bump is an @AutoMigration except the manual 52→53 (FTS rebuild), 63→64 and 67→68 (no log table rebuild).
+        // Every bump is an @AutoMigration except the manual 52→53 (FTS rebuild), 63→64 and 67→68 (no log table
+        // rebuild).
         helper.runMigrationsAndValidate(latestSchemaVersion(), MANUAL_MIGRATIONS).close()
     }
 

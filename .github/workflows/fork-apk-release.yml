@@ -1,4 +1,4 @@
-# prokrypt fork only: builds signed F-Droid- and Google-flavor APKs from main and publishes them as a
+# prokrypt fork only: on manual dispatch, builds signed F-Droid- and Google-flavor APKs from main and publishes them as a
 # GitHub Release, so Obtainium can install and update them from https://github.com/prokrypt/Meshtastic-Android.
 # Needs two repository secrets: RELEASE_KEYSTORE_B64 (base64 of the keystore) and
 # RELEASE_KEYSTORE_PASSWORD (store and key password; key alias "release").
@@ -6,9 +6,8 @@
 # The Google flavor uses the tracked placeholder Firebase config, so it reports nothing to Firebase.
 name: Fork APK release
 
+# Manual only: releases are started on request (Actions > Fork APK release > Run workflow).
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:

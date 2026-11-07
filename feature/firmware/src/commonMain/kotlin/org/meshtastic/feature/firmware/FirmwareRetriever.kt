@@ -360,11 +360,7 @@ open class FirmwareRetriever(private val fileHandler: FirmwareFileHandler) {
             val arch = targetArch.lowercase().replace("-", "")
             return "${url.substringBeforeLast('/')}/firmware-$arch-$version.zip"
         }
-        for (arch in KNOWN_ARCHS) {
-            if (url.contains(arch, ignoreCase = true)) {
-                return url.replace(arch, targetArch.lowercase(), ignoreCase = true)
-            }
-        }
-        return url
+        val arch = KNOWN_ARCHS.firstOrNull { url.contains(it, ignoreCase = true) }
+        return if (arch == null) url else url.replace(arch, targetArch.lowercase(), ignoreCase = true)
     }
 }

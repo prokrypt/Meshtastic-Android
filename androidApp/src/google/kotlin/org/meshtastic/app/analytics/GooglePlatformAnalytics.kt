@@ -48,6 +48,7 @@ import com.datadog.android.trace.opentelemetry.DatadogOpenTelemetry
 import com.google.android.gms.common.ConnectionResult
 import com.google.android.gms.common.GoogleApiAvailabilityLight
 import com.google.firebase.Firebase
+import com.google.firebase.FirebaseOptions
 import com.google.firebase.analytics.FirebaseAnalytics.ConsentStatus
 import com.google.firebase.analytics.FirebaseAnalytics.ConsentType
 import com.google.firebase.analytics.analytics
@@ -105,6 +106,19 @@ class GooglePlatformAnalytics(private val context: Context, private val analytic
     private val isRobolectric: Boolean
         get() = "robolectric" == Build.FINGERPRINT
 
+    /**
+     * False when the build carries the tracked placeholder Datadog token, as forks and local builds do. The SDK would
+     * still run its upload scheduler, ANR watchdog, system receivers and on-disk batches, and every upload would be
+     * refused, so it is not started at all.
+     */
+    private val hasDatadogCredentials: Boolean = !isPlaceholderDatadogToken(BuildConfig.datadogClientToken)
+
+    /** False when the build carries the tracked placeholder `google-services.json`; see [hasDatadogCredentials]. */
+    private val hasFirebaseProject: Boolean by lazy {
+        val options = FirebaseOptions.fromResource(context)
+        !isPlaceholderFirebaseProject(projectId = options?.projectId, apiKey = options?.apiKey)
+    }
+
     companion object {
         private const val TAG = "GooglePlatformAnalytics"
         private const val SERVICE_NAME = "org.meshtastic"
@@ -127,6 +141,14 @@ class GooglePlatformAnalytics(private val context: Context, private val analytic
         KermitLogger.setLogWriters(DatadogLogWriter(), CrashlyticsLogWriter(), co.touchlab.kermit.LogcatWriter())
         KermitLogger.setMinSeverity(if (BuildConfig.DEBUG) Severity.Debug else Severity.Info)
 
+        if (!hasDatadogCredentials || !hasFirebaseProject) {
+            KermitLogger.i {
+                "Analytics backends without real keys stay off: " +
+                    "datadog=${if (hasDatadogCredentials) "on" else "off"} " +
+                    "firebase=${if (hasFirebaseProject) "on" else "off"}"
+            }
+        }
+
         // Initial consent state
         updateAnalyticsConsent(analyticsPrefs.analyticsAllowed.value)
 
@@ -142,7 +164,7 @@ class GooglePlatformAnalytics(private val context: Context, private val analytic
     private fun ensureInitialized() {
         if (!analyticsPrefs.analyticsAllowed.value || isInTestLab || isRobolectric) return
 
-        if (!Datadog.isInitialized()) {
+        if (hasDatadogCredentials && !Datadog.isInitialized()) {
             initDatadog(context as Application)
             datadogLogger =
                 Logger.Builder()
@@ -154,7 +176,7 @@ class GooglePlatformAnalytics(private val context: Context, private val analytic
                     .build()
         }
 
-        if (!isFirebaseInitialized) {
+        if (hasFirebaseProject && !isFirebaseInitialized) {
             initCrashlytics(context as Application)
             isFirebaseInitialized = true
         }

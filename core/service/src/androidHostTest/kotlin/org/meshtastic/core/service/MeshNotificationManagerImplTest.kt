@@ -30,6 +30,7 @@ import dev.mokkery.every
 import dev.mokkery.mock
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.advanceTimeBy
@@ -77,6 +78,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.DurationUnit
 
@@ -245,6 +247,48 @@ class MeshNotificationManagerImplTest {
         notifications.updateServiceStateNotification(ConnectionState.Disconnected, telemetry)
         advanceUntilIdle()
         assertNotNull(activeServiceNotification())
+    }
+
+    @Test
+    fun `readings wait while the screen is off and are posted when it turns on`() = runWithRenderScope { renderScope ->
+        val screen = MutableStateFlow(true)
+        val notifications = createManager(renderScope).apply { screenOn = { screen } }
+        notifications.initChannels()
+        notifications.updateServiceStateNotification(ConnectionState.Connected, telemetryWithOnline(1))
+        runUntilSettled { serviceText().contains(getString(Res.string.local_stats_nodes, 1, ONE_HOUR_OF_REPORTS)) }
+
+        // An hour of once-a-minute radio reports with the screen off: none of them reaches the shade.
+        screen.value = false
+        advanceUntilIdle()
+        repeat(ONE_HOUR_OF_REPORTS) { report ->
+            notifications.updateServiceStateNotification(ConnectionState.Connected, telemetryWithOnline(report + 2))
+            advanceUntilIdle()
+        }
+        // Give a stray render, which would load its strings off the test scheduler, real time to land.
+        withContext(Dispatchers.Default) { delay(STRAY_RENDER_WAIT) }
+        advanceUntilIdle()
+        assertTrue(serviceText().contains(getString(Res.string.local_stats_nodes, 1, ONE_HOUR_OF_REPORTS)))
+
+        // The newest one is shown the moment the screen turns on.
+        screen.value = true
+        runUntilSettled {
+            serviceText()
+                .contains(getString(Res.string.local_stats_nodes, ONE_HOUR_OF_REPORTS + 1, ONE_HOUR_OF_REPORTS))
+        }
+    }
+
+    @Test
+    fun `a connection change is posted at once while the screen is off`() = runWithRenderScope { renderScope ->
+        val screen = MutableStateFlow(true)
+        val notifications = createManager(renderScope).apply { screenOn = { screen } }
+        notifications.initChannels()
+        notifications.updateServiceStateNotification(ConnectionState.Connected, telemetryWithOnline(1))
+        runUntilSettled { activeServiceNotification() != null }
+
+        screen.value = false
+        notifications.updateServiceStateNotification(ConnectionState.Disconnected, telemetryWithOnline(1))
+
+        runUntilSettled { serviceTitle() == getString(Res.string.disconnected) }
     }
 
     @Test
@@ -473,6 +517,21 @@ class MeshNotificationManagerImplTest {
         }
         .build()
 
+    private fun telemetryWithOnline(online: Int) = Telemetry.Builder()
+        .also { wb ->
+            wb.local_stats =
+                LocalStats.Builder()
+                    .also { stats ->
+                        stats.uptime_seconds = 1
+                        stats.num_online_nodes = online
+                        stats.num_total_nodes = ONE_HOUR_OF_REPORTS
+                    }
+                    .build()
+        }
+        .build()
+
+    private fun serviceText() = serviceExtras()?.getCharSequence(Notification.EXTRA_TEXT)?.toString().orEmpty()
+
     private fun activeServiceNotification() =
         systemNotificationManager.activeNotifications.singleOrNull { it.id == SERVICE_NOTIFY_ID }
 
@@ -488,6 +547,8 @@ class MeshNotificationManagerImplTest {
 
     private companion object {
         const val TRACKED_NUM = 42
+        const val ONE_HOUR_OF_REPORTS = 60
+        val STRAY_RENDER_WAIT = 500.milliseconds
     }
 
     private fun clearManagedChannels() {

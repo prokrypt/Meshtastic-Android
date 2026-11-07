@@ -27,14 +27,20 @@ import co.touchlab.kermit.Logger
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.sample
 import kotlinx.coroutines.launch
 import org.koin.core.annotation.Single
+import org.meshtastic.core.common.util.screenInteractive
 import org.meshtastic.core.repository.AppWidgetUpdater
 
 private const val WIDGET_UPDATE_DEBOUNCE_MS = 500L
@@ -53,9 +59,12 @@ class AndroidAppWidgetUpdater(
         // Observe state changes and trigger a widget re-render whenever the data changes.
         // Glance compositions are ephemeral — the widget cannot self-update via collectAsState()
         // alone, so we must call updateAll() externally to drive re-renders.
+        // Nothing on the home screen is seen while the screen is off, so redraws wait for it to turn on; each one runs
+        // a Glance composition and wakes the launcher. The state is checked again then, so a change is drawn at once.
         @OptIn(FlowPreview::class)
         scope.launch {
             stateProvider.state
+                .whileScreenOn()
                 .debounce(WIDGET_UPDATE_DEBOUNCE_MS)
                 .distinctUntilChanged { old, new -> old.copy(updateTimeMillis = 0) == new.copy(updateTimeMillis = 0) }
                 .collect { if (hasInstances(LocalStatsWidget::class.java)) update(LocalStatsWidget()) }
@@ -66,12 +75,20 @@ class AndroidAppWidgetUpdater(
         @OptIn(FlowPreview::class)
         scope.launch {
             trackerDataSource.checkedInputs
+                .whileScreenOn()
                 .sample(TRACKER_UPDATE_SAMPLE_MS)
                 .map { inputs -> trackedNodeNums().map { nodeTrackerState(it, inputs) } }
                 .distinctUntilChanged()
                 .collect { states -> if (states.isNotEmpty()) update(NodeTrackerWidget()) }
         }
     }
+
+    /** This flow while the screen is on; nothing while it is off. An unknown screen state counts as on. */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private fun <T> Flow<T>.whileScreenOn(): Flow<T> = context
+        .screenInteractive()
+        .catch { emit(true) }
+        .flatMapLatest { on -> if (on) this@whileScreenOn else emptyFlow() }
 
     private suspend fun hasInstances(widget: Class<out GlanceAppWidget>): Boolean =
         GlanceAppWidgetManager(context).getGlanceIds(widget).isNotEmpty()

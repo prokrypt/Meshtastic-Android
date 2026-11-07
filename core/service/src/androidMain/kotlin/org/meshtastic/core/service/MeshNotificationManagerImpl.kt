@@ -36,10 +36,12 @@ import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
@@ -62,6 +64,7 @@ import org.meshtastic.core.common.util.NumberFormatter
 import org.meshtastic.core.common.util.nowMillis
 import org.meshtastic.core.common.util.nowSeconds
 import org.meshtastic.core.common.util.safeCatching
+import org.meshtastic.core.common.util.screenInteractive
 import org.meshtastic.core.model.Channel
 import org.meshtastic.core.model.ConnectionState
 import org.meshtastic.core.model.FirmwareUpdateNotice
@@ -352,8 +355,11 @@ class MeshNotificationManagerImpl(
     private val serviceNotificationSnapshots =
         MutableSharedFlow<ServiceNotificationSnapshot>(replay = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
 
+    /** Test seam for whether the screen is on; see [postedServiceNotificationSnapshots]. */
+    internal var screenOn: () -> Flow<Boolean> = { context.screenInteractive() }
+
     init {
-        scope.launch { serviceNotificationSnapshots.collectLatest(::renderAndPostServiceNotification) }
+        scope.launch { postedServiceNotificationSnapshots().collectLatest(::renderAndPostServiceNotification) }
         // A long operation changes the notification without any connection-state change to piggyback on — a
         // firmware update in particular deselects the device, so the state alone would read "Disconnected".
         scope.launch {
@@ -391,6 +397,35 @@ class MeshNotificationManagerImpl(
                 .run()
         }
     }
+
+    /**
+     * [serviceNotificationSnapshots], less the ones that only bring new readings while the screen is off. Nobody sees
+     * the shade then, and each post wakes the system and every notification listener; the radio's own reports alone
+     * come about once a minute. The newest held snapshot is posted the moment the screen turns on, so the shade is
+     * current whenever it can be seen. A connection change, a long operation and a Live Update always post at once.
+     */
+    private fun postedServiceNotificationSnapshots(): Flow<ServiceNotificationSnapshot> {
+        var lastPosted: ServiceNotificationSnapshot? = null
+        // An unknown screen state counts as on, so a failed receiver never hides an update.
+        val screen = flow { emitAll(screenOn()) }.catch { emit(true) }
+        return combine(serviceNotificationSnapshots, screen) { snapshot, on -> snapshot to on }
+            .transform { (snapshot, on) ->
+                val posted = lastPosted
+                val hold =
+                    !on && posted != null && snapshot.liveUpdate == null && snapshot.onlyReadingsDifferFrom(posted)
+                if (!hold && snapshot !== posted) {
+                    lastPosted = snapshot
+                    emit(snapshot)
+                }
+            }
+    }
+
+    private fun ServiceNotificationSnapshot.onlyReadingsDifferFrom(other: ServiceNotificationSnapshot): Boolean = copy(
+        localStats = other.localStats,
+        deviceMetrics = other.deviceMetrics,
+        previousMessage = other.previousMessage,
+        nextUpdateAt = other.nextUpdateAt,
+    ) == other
 
     private fun liveUpdateReadings(mode: LiveUpdateMode): Flow<LiveUpdateReading?> = when (mode) {
         LiveUpdateMode.Off -> flowOf(null)

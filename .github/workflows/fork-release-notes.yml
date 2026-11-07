@@ -1,0 +1,30 @@
+# prokrypt fork only: rewrites the notes of every existing v*-pk.* release with
+# .github/scripts/fork-release-notes.sh. New releases get their notes from fork-apk-release.yml.
+name: Fork release notes backfill
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  notes:
+    if: github.repository == 'prokrypt/Meshtastic-Android'
+    runs-on: ubuntu-26.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Rewrite release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git fetch --no-tags https://github.com/meshtastic/Meshtastic-Android main:refs/remotes/upstream/main
+          for tag in $(git tag --list 'v*-pk.*'); do
+            gh release view "$tag" > /dev/null 2>&1 || continue
+            .github/scripts/fork-release-notes.sh "$tag" upstream/main > "$RUNNER_TEMP/notes.md"
+            gh release edit "$tag" --notes-file "$RUNNER_TEMP/notes.md"
+          done

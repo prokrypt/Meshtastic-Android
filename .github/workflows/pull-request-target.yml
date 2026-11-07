@@ -12,6 +12,8 @@ on:
 
 jobs:
   labeler:
+    # prokrypt fork: upstream's label policy doesn't apply here.
+    if: github.repository == 'meshtastic/Meshtastic-Android'
     permissions:
       contents: read
       pull-requests: write

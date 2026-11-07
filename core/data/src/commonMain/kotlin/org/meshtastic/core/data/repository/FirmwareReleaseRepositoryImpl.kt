@@ -42,6 +42,7 @@ import org.meshtastic.core.model.asDeviceVersion
 import org.meshtastic.core.model.asFirmwareRelease
 import org.meshtastic.core.model.util.TimeConstants
 import org.meshtastic.core.network.FirmwareReleaseRemoteDataSource
+import org.meshtastic.core.network.HttpClientDefaults
 import org.meshtastic.core.repository.FirmwareReleaseRepository
 import kotlin.concurrent.Volatile
 
@@ -182,8 +183,10 @@ open class FirmwareReleaseRepositoryImpl(
 
         safeCatching {
             writeMutex.withLock {
+                // Fork: the bundled snapshot is upstream's; only fork releases in it may seed the cache.
                 val toApply =
                     listOf(FirmwareReleaseType.STABLE to bundled.stable, FirmwareReleaseType.ALPHA to bundled.alpha)
+                        .map { (type, releases) -> type to releases.filter { it.isForkRelease() } }
                         .filter { (type, releases) -> isBundleNewerFor(type, releases) }
                         .toMap()
                 if (toApply.isNotEmpty()) {
@@ -205,15 +208,13 @@ open class FirmwareReleaseRepositoryImpl(
     private suspend fun fetchAndPersistReleases() {
         Logger.d { "FirmwareReleaseRepository: fetching from remote API" }
         val releases = remoteDataSource.getFirmwareReleases().releases
-        if (releases.stable.isEmpty() && releases.alpha.isEmpty()) {
-            Logger.w { "FirmwareReleaseRepository: remote returned no releases; leaving cache untouched" }
-        } else {
-            // Replace rather than upsert so releases pulled or reclassified upstream don't linger as "latest".
-            writeMutex.withLock {
-                localDataSource.replaceFirmwareReleases(
-                    mapOf(FirmwareReleaseType.STABLE to releases.stable, FirmwareReleaseType.ALPHA to releases.alpha),
-                )
-            }
+        // Fork: an empty list is real (no published fork release; transport errors throw before here), and it must
+        // still replace the cache so upstream rows from before the switch are never offered.
+        // Replace rather than upsert so releases pulled or reclassified upstream don't linger as "latest".
+        writeMutex.withLock {
+            localDataSource.replaceFirmwareReleases(
+                mapOf(FirmwareReleaseType.STABLE to releases.stable, FirmwareReleaseType.ALPHA to releases.alpha),
+            )
         }
     }
 
@@ -226,6 +227,9 @@ open class FirmwareReleaseRepositoryImpl(
             localDataSource.replaceFirmwareReleases(mapOf(FirmwareReleaseType.NIGHTLY to listOfNotNull(nightly)))
         }
     }
+
+    private fun NetworkFirmwareRelease.isForkRelease(): Boolean =
+        zipUrl.startsWith(HttpClientDefaults.FORK_FIRMWARE_DOWNLOAD_PREFIX)
 
     private fun FirmwareReleaseEntity.isStale(): Boolean = (nowMillis - this.lastUpdated) > CACHE_EXPIRATION_TIME_MS
 

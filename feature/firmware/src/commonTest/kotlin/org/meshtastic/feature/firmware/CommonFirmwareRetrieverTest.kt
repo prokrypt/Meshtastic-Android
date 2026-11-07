@@ -463,6 +463,21 @@ abstract class CommonFirmwareRetrieverTest {
     }
 
     @Test
+    fun `github release manifest url resolves to the per-arch release zip`() = runTest {
+        val handler = FakeFirmwareFileHandler()
+        val retriever = FirmwareRetriever(handler)
+        val dir = "https://github.com/prokrypt/firmware/releases/download/v2.8.2.926f09e"
+        val release = FirmwareRelease(id = "v2.8.2.926f09e", zipUrl = "$dir/firmware-2.8.2.926f09e.json")
+        val nrf = DeviceHardware(platformioTarget = "tracker-t1000-e", architecture = "nrf52840")
+
+        retriever.retrieveOtaFirmware(release, nrf) {}
+        retriever.retrieveEsp32Firmware(release, TEST_HARDWARE) {}
+
+        assertTrue("$dir/firmware-nrf52840-2.8.2.926f09e.zip" in handler.downloadedUrls, "${handler.downloadedUrls}")
+        assertTrue("$dir/firmware-esp32s3-2.8.2.926f09e.zip" in handler.downloadedUrls, "${handler.downloadedUrls}")
+    }
+
+    @Test
     fun `retrieveOtaFirmware uses platformioTarget for variant`() = runTest {
         val handler = FakeFirmwareFileHandler()
         val retriever = FirmwareRetriever(handler)

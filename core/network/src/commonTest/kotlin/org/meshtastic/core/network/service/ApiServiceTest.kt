@@ -59,6 +59,50 @@ class ApiServiceTest {
     }
 
     @Test
+    fun `firmware releases come from the fork github releases`() = runTest {
+        var requested: String? = null
+        val dl = "https://github.com/prokrypt/firmware/releases/download"
+        val engine = MockEngine { request ->
+            requested = request.url.toString()
+            respond(
+                content =
+                """
+                    [
+                      {"tag_name": "v2.8.3.aaaaaaa", "draft": true, "assets": []},
+                      {"tag_name": "v2.8.2.926f09e", "name": "Firmware (no-auto-writes) 2.8.2.926f09e Alpha",
+                       "html_url": "https://github.com/prokrypt/firmware/releases/tag/v2.8.2.926f09e",
+                       "body": null, "draft": false, "prerelease": true,
+                       "assets": [
+                         {"name": "firmware-nrf52840-2.8.2.926f09e.zip",
+                          "browser_download_url": "$dl/v2.8.2.926f09e/firmware-nrf52840-2.8.2.926f09e.zip"},
+                         {"name": "firmware-2.8.2.926f09e.json",
+                          "browser_download_url": "$dl/v2.8.2.926f09e/firmware-2.8.2.926f09e.json"}
+                       ]},
+                      {"tag_name": "v2.8.1.0000000", "draft": false, "assets": []}
+                    ]
+                    """
+                    .trimIndent(),
+                headers = headersOf(HttpHeaders.ContentType, ContentType.Application.Json.toString()),
+            )
+        }
+        val client = HttpClient(engine)
+
+        try {
+            val releases = ApiServiceImpl(client).getFirmwareReleases().releases
+
+            assertEquals("https://api.github.com/repos/prokrypt/firmware/releases?per_page=20", requested)
+            val release = releases.alpha.single() // draft and manifest-less releases are skipped
+            assertEquals(releases.alpha, releases.stable)
+            assertEquals("v2.8.2.926f09e", release.id)
+            assertEquals("Firmware (no-auto-writes) 2.8.2.926f09e Alpha", release.title)
+            assertEquals("$dl/v2.8.2.926f09e/firmware-2.8.2.926f09e.json", release.zipUrl)
+            assertEquals("", release.releaseNotes)
+        } finally {
+            client.close()
+        }
+    }
+
+    @Test
     fun `nightly pointer returns null when nothing is published`() = runTest {
         // The host answers an unpublished nightly with its own HTML error page, so the status — not the body —
         // is what distinguishes "gone" from "unreachable".

@@ -353,6 +353,13 @@ open class FirmwareRetriever(private val fileHandler: FirmwareFileHandler) {
             }
 
     private fun resolveZipUrl(url: String, targetArch: String): String {
+        // GitHub releases point at the target manifest `firmware-<version>.json`; the per-arch zip sits beside it as
+        // `firmware-<arch>-<version>.zip`, with the arch unhyphenated (`esp32-s3` -> `esp32s3`).
+        if (url.endsWith(".json") && url.substringAfterLast('/').startsWith("firmware-")) {
+            val version = url.substringAfterLast("/firmware-").removeSuffix(".json")
+            val arch = targetArch.lowercase().replace("-", "")
+            return "${url.substringBeforeLast('/')}/firmware-$arch-$version.zip"
+        }
         for (arch in KNOWN_ARCHS) {
             if (url.contains(arch, ignoreCase = true)) {
                 return url.replace(arch, targetArch.lowercase(), ignoreCase = true)

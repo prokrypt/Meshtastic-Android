@@ -67,6 +67,15 @@ object HttpClientDefaults {
      */
     const val RELEASE_BASE_URL = "https://release.meshtastic.org"
 
+    /**
+     * Fork: stable and alpha firmware come from this fork's GitHub releases instead of api.meshtastic.org. Releases
+     * carry per-arch zips (`firmware-<arch>-<version>.zip`) beside the target manifest `firmware-<version>.json`.
+     */
+    const val FORK_FIRMWARE_REPO = "prokrypt/firmware"
+
+    /** Download prefix every fork firmware asset URL starts with. */
+    const val FORK_FIRMWARE_DOWNLOAD_PREFIX = "https://github.com/$FORK_FIRMWARE_REPO/releases/download/"
+
     /** The flasher's device models, `<name>.glb` beside the `img/devices/<name>.svg` illustrations the apps show. */
     const val DEVICE_MODEL_BASE_URL = "https://flasher.meshtastic.org/models/devices"
 }

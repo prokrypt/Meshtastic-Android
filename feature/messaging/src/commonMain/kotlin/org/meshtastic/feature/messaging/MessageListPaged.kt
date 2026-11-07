@@ -162,7 +162,10 @@ internal fun MessageListPaged(
         remember(state.nodes) { state.nodes.filter { it.hasDisplayName }.associate { it.user.id to it.displayName } }
 
     var showReactionDialog by remember { mutableStateOf<List<Reaction>?>(null) }
-    showReactionDialog?.let { reactions ->
+    showReactionDialog?.let { opened ->
+        // Read the live message so status changes (e.g. implicit ACK) show while the sheet is open.
+        val replyId = opened.firstOrNull()?.replyId
+        val reactions = state.messages.itemSnapshotList.items.firstOrNull { it.packetId == replyId }?.emojis ?: opened
         ReactionDialog(
             reactions = reactions,
             myId = state.ourNode?.user?.id,

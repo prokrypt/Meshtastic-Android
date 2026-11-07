@@ -64,7 +64,7 @@ class MeshtasticDatabaseMigrationTest {
     @Test
     fun migrateAll() = runTest {
         helper.createDatabase(EARLIEST_SCHEMA_VERSION).close()
-        // Every bump is an @AutoMigration except the manual 52→53 (FTS rebuild) and 63→64 (no log table rebuild).
+        // Every bump is an @AutoMigration except the manual 52→53 (FTS rebuild), 63→64 and 67→68 (no log table rebuild).
         helper.runMigrationsAndValidate(latestSchemaVersion(), MANUAL_MIGRATIONS).close()
     }
 
@@ -636,6 +636,47 @@ class MeshtasticDatabaseMigrationTest {
     }
 
     /**
+     * [MeshtasticDatabase.MIGRATION_67_68] adds the (from_num, port_num, received_date) and (port_num, received_date)
+     * indices on `log` in place. Rows keep their rowids and their cascading traceroute positions, and a single-port
+     * node read plus a per-port read walk the new indices instead of sorting.
+     */
+    @Test
+    fun logGainsCompositeIndicesWithoutRebuildingLog() = runTest {
+        helper.createDatabase(LOG_COMPOSITE_FROM_VERSION).use { connection ->
+            connection.execSQL(
+                "INSERT INTO log (rowid, uuid, type, received_date, message, from_num, port_num) " +
+                    "VALUES (40, 'log-a', 'Packet', 1000, 'first', 42, 70)",
+            )
+            connection.execSQL(
+                "INSERT INTO traceroute_node_position (log_uuid, request_id, node_num, position) " +
+                    "VALUES ('log-a', 5, 77, x'0801')",
+            )
+        }
+
+        helper.runMigrationsAndValidate(LOG_COMPOSITE_TO_VERSION, MANUAL_MIGRATIONS).use { connection ->
+            assertEquals(listOf("40"), queryColumn(connection, "SELECT rowid FROM log WHERE uuid = 'log-a'"))
+            assertEquals(
+                listOf("77"),
+                queryColumn(connection, "SELECT node_num FROM traceroute_node_position WHERE log_uuid = 'log-a'"),
+            )
+            val nodePlan =
+                queryPlan(
+                    connection,
+                    "SELECT * FROM log WHERE from_num = 42 AND port_num = 70 ORDER BY received_date DESC LIMIT 10",
+                )
+            assertTrue(nodePlan.any { "index_log_from_num_port_num_received_date" in it }, nodePlan.toString())
+            assertTrue(nodePlan.none { "TEMP B-TREE" in it }, nodePlan.toString())
+            val portPlan =
+                queryPlan(
+                    connection,
+                    "SELECT * FROM log WHERE port_num = 70 AND from_num != 0 ORDER BY received_date DESC LIMIT 10",
+                )
+            assertTrue(portPlan.any { "index_log_port_num_received_date" in it }, portPlan.toString())
+            assertTrue(portPlan.none { "TEMP B-TREE" in it }, portPlan.toString())
+        }
+    }
+
+    /**
      * [MeshtasticDatabase.MIGRATION_63_64] rebuilds only `discovered_node`, to make `snr` nullable, and adds the
      * `log.received_date` index in place. Every discovered node survives with its values and its parent link, a stored
      * 0 dB stays 0 because it may be a real reading, and NULL becomes storable. The `log` table is never copied: its
@@ -773,10 +814,17 @@ class MeshtasticDatabaseMigrationTest {
         const val SCHEMA_64_TO_VERSION = 64
         const val REACTION_TRANSPORT_FROM_VERSION = 66
         const val REACTION_TRANSPORT_TO_VERSION = 67
+        const val LOG_COMPOSITE_FROM_VERSION = 67
+        const val LOG_COMPOSITE_TO_VERSION = 68
         const val QUERY_PLAN_DETAIL_COLUMN = 3
 
-        /** Every hand-written migration, which a walk across 52→53 or 63→64 must be given. */
-        val MANUAL_MIGRATIONS = listOf(MeshtasticDatabase.MIGRATION_52_53, MeshtasticDatabase.MIGRATION_63_64)
+        /** Every hand-written migration, which a walk across 52→53, 63→64 or 67→68 must be given. */
+        val MANUAL_MIGRATIONS =
+            listOf(
+                MeshtasticDatabase.MIGRATION_52_53,
+                MeshtasticDatabase.MIGRATION_63_64,
+                MeshtasticDatabase.MIGRATION_67_68,
+            )
         const val PUBLIC_KEY_BYTES = 32
         const val STORED_CHANNEL_SET_HEX = "0A0612044D657368"
 

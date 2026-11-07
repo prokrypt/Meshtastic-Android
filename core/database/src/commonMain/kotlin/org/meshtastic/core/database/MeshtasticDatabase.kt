@@ -158,7 +158,8 @@ import org.meshtastic.core.database.entity.TracerouteNodePositionEntity
         AutoMigration(from = 64, to = 65),
         AutoMigration(from = 65, to = 66),
         AutoMigration(from = 66, to = 67),
-        AutoMigration(from = 67, to = 68),
+        // 67 -> 68 is the manual MIGRATION_67_68 (composite log indices added in place), applied via
+        // configureCommon().
     ],
     version = 68,
     exportSchema = true,
@@ -269,6 +270,25 @@ abstract class MeshtasticDatabase : RoomDatabase() {
             }
 
         /**
+         * Adds the (from_num, port_num, received_date) and (port_num, received_date) indices on `log` in place. Room's
+         * auto-migration would rebuild `log` for an index change, which renumbers rowids and, through DROP TABLE,
+         * cascades away every `traceroute_node_position` row.
+         */
+        internal val MIGRATION_67_68: Migration =
+            object : Migration(67, 68) {
+                override suspend fun migrate(connection: SQLiteConnection) {
+                    connection.execSQL(
+                        "CREATE INDEX IF NOT EXISTS `index_log_from_num_port_num_received_date` " +
+                            "ON `log` (`from_num`, `port_num`, `received_date`)",
+                    )
+                    connection.execSQL(
+                        "CREATE INDEX IF NOT EXISTS `index_log_port_num_received_date` " +
+                            "ON `log` (`port_num`, `received_date`)",
+                    )
+                }
+            }
+
+        /**
          * Configures a [RoomDatabase.Builder] with standard settings for this project.
          *
          * All platforms force [setSingleConnectionPool]. Without it, Room defaults to a 4-reader pool for named
@@ -285,7 +305,7 @@ abstract class MeshtasticDatabase : RoomDatabase() {
         @OptIn(ExperimentalCoroutinesApi::class)
         fun <T : RoomDatabase> RoomDatabase.Builder<T>.configureCommon(): RoomDatabase.Builder<T> =
             this.fallbackToDestructiveMigration(dropAllTables = false)
-                .addMigrations(MIGRATION_52_53, MIGRATION_63_64)
+                .addMigrations(MIGRATION_52_53, MIGRATION_63_64, MIGRATION_67_68)
                 .setSingleConnectionPool()
                 .setConnectionPoolTimeout(ROOM_POOL_ACQUIRE_TIMEOUT)
                 .setQueryCoroutineContext(

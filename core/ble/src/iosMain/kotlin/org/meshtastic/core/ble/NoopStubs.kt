@@ -23,7 +23,7 @@ import com.juul.kable.ScannerBuilder
 // Kable's `Filter.Address` throws UnsupportedOperationException on Apple.
 internal actual val supportsNativeAddressScanFilter: Boolean = false
 
-internal actual fun ScannerBuilder.platformScanConfig() {
+internal actual fun ScannerBuilder.platformScanConfig(lowLatency: Boolean) {
     // No-op: preConflate is Android-only.
 }
 

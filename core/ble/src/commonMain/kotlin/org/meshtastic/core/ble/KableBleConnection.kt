@@ -43,11 +43,26 @@ import kotlinx.coroutines.job
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.meshtastic.core.common.util.ioDispatcher
+import org.meshtastic.core.common.util.nowMillis
 import org.meshtastic.core.model.util.anonymize
 import kotlin.concurrent.Volatile
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 import kotlin.uuid.Uuid
+
+/**
+ * Process-wide wall-clock time a BLE link was last released (closed by us or dropped by the peer), 0 = never. A new
+ * transport uses it to skip a reconnect settle when no link closed recently.
+ */
+object BleLinkReleaseClock {
+    @Volatile
+    var lastReleaseMillis: Long = 0L
+        private set
+
+    internal fun markReleased() {
+        lastReleaseMillis = nowMillis
+    }
+}
 
 /** [BleService] implementation backed by a Kable [Peripheral] for a specific GATT service. */
 class KableBleService(private val peripheral: Peripheral, private val serviceUuid: Uuid) : BleService {
@@ -169,6 +184,8 @@ class KableBleConnection(private val scope: CoroutineScope, private val loggingC
                     val mappedState = kableState.toBleConnectionState(hasStartedConnecting) ?: return@onEach
                     if (kableState is State.Connecting || kableState is State.Connected) {
                         hasStartedConnecting = true
+                    } else if (kableState is State.Disconnected && hasStartedConnecting) {
+                        BleLinkReleaseClock.markReleased()
                     }
 
                     meshtasticDevice.updateState(mappedState)
@@ -338,5 +355,6 @@ class KableBleConnection(private val scope: CoroutineScope, private val loggingC
         } catch (e: Exception) {
             Logger.w(e) { "[$tag] Failed to close peripheral" }
         }
+        if (peripheral != null) BleLinkReleaseClock.markReleased()
     }
 }

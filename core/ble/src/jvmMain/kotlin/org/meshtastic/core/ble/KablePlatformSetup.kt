@@ -21,7 +21,7 @@ import com.juul.kable.PeripheralBuilder
 import com.juul.kable.ScannerBuilder
 import com.juul.kable.toIdentifier
 
-internal actual fun ScannerBuilder.platformScanConfig() {
+internal actual fun ScannerBuilder.platformScanConfig(lowLatency: Boolean) {
     // No-op: preConflate is Android-only.
 }
 

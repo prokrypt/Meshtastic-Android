@@ -21,6 +21,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlin.coroutines.coroutineContext
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -33,6 +34,7 @@ import kotlin.time.Duration.Companion.seconds
  * @param maxFailures maximum consecutive failures before giving up; use [Int.MAX_VALUE] to retry indefinitely
  * @param failureThreshold after this many consecutive failures, signal a transient disconnect
  * @param settleDelay delay before each connection attempt to let the BLE stack settle
+ * @param initialSettleDelay delay before the first attempt only; shorter when no BLE link was released recently
  * @param minStableConnection minimum time a connection must stay up to be considered "stable"
  * @param backoffStrategy computes the backoff delay for a given failure count
  */
@@ -40,6 +42,7 @@ class BleReconnectPolicy(
     private val maxFailures: Int = DEFAULT_MAX_FAILURES,
     private val failureThreshold: Int = DEFAULT_FAILURE_THRESHOLD,
     private val settleDelay: Duration = DEFAULT_SETTLE_DELAY,
+    private val initialSettleDelay: Duration = settleDelay,
     /** Minimum time a connection must stay up to be considered "stable". Exposed for callers to compare uptime. */
     val minStableConnection: Duration = DEFAULT_MIN_STABLE_CONNECTION,
     private val backoffStrategy: (attempt: Int) -> Duration = ::computeReconnectBackoff,
@@ -121,8 +124,10 @@ class BleReconnectPolicy(
         onTransientDisconnect: suspend (Throwable?) -> Unit,
         onPermanentDisconnect: suspend (Throwable?) -> Unit,
     ) {
+        var nextSettle = initialSettleDelay
         while (coroutineContext.isActive) {
-            delay(settleDelay)
+            delay(nextSettle)
+            nextSettle = settleDelay
 
             val outcome = attempt()
             val lastError = (outcome as? Outcome.Failed)?.error
@@ -171,6 +176,19 @@ class BleReconnectPolicy(
         internal val RECONNECT_MAX_DELAY = 60.seconds
         internal const val BACKOFF_MAX_EXPONENT = 4
     }
+}
+
+/**
+ * Settle a new transport still owes before its first attempt: what is left of [settle] since a BLE link was last
+ * released ([lastReleaseMillis], 0 = never). The firmware only needs the pause right after a link closes.
+ */
+internal fun remainingSettleDelay(
+    lastReleaseMillis: Long,
+    nowMillis: Long,
+    settle: Duration = BleReconnectPolicy.DEFAULT_SETTLE_DELAY,
+): Duration {
+    if (lastReleaseMillis <= 0L) return Duration.ZERO
+    return (settle - (nowMillis - lastReleaseMillis).milliseconds).coerceIn(Duration.ZERO, settle)
 }
 
 /**

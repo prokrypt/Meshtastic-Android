@@ -78,7 +78,7 @@ class FakeBleScanner :
     var lastScanAddress: String? = null
         private set
 
-    override fun scan(timeout: Duration, serviceUuid: Uuid?, address: String?): Flow<BleDevice> {
+    override fun scan(timeout: Duration, serviceUuid: Uuid?, address: String?, lowLatency: Boolean): Flow<BleDevice> {
         lastScanServiceUuid = serviceUuid
         lastScanAddress = address
         return flow { emitAll(foundDevices) }

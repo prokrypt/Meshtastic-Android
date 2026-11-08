@@ -72,9 +72,9 @@ open class KableBleScanner(private val loggingConfig: BleLoggingConfig) : BleSca
 
     internal open suspend fun reserveScanStart() = scanStartLimiter.reserveStart()
 
-    internal open fun advertisements(filter: KableScanFilter): Flow<KableScanResult> {
+    internal open fun advertisements(filter: KableScanFilter, lowLatency: Boolean): Flow<KableScanResult> {
         val scanner = Scanner {
-            platformScanConfig()
+            platformScanConfig(lowLatency)
             logging { applyConfig(loggingConfig) }
             when (filter) {
                 KableScanFilter.None -> Unit
@@ -89,7 +89,7 @@ open class KableBleScanner(private val loggingConfig: BleLoggingConfig) : BleSca
     // (must propagate untouched), UnmetRequirementException (an IOException) and IllegalStateException. They have no
     // common supertype below Exception, so merging them would mean catching Exception broadly instead.
     @Suppress("ThrowsCount")
-    override fun scan(timeout: Duration, serviceUuid: Uuid?, address: String?): Flow<BleDevice> {
+    override fun scan(timeout: Duration, serviceUuid: Uuid?, address: String?, lowLatency: Boolean): Flow<BleDevice> {
         val nativeFilter = resolveKableScanFilter(serviceUuid = serviceUuid, address = address)
 
         // Kable's Scanner doesn't enforce timeout internally, it runs until the Flow is cancelled.
@@ -101,7 +101,7 @@ open class KableBleScanner(private val loggingConfig: BleLoggingConfig) : BleSca
                     // Re-check the address even when the native filter already covers it: callers such as
                     // NymeaWifiService take the first emission without their own address check, so an unsupported
                     // native address filter must never widen the scan to other devices.
-                    advertisements(nativeFilter)
+                    advertisements(nativeFilter, lowLatency)
                         .filter { address == null || it.identifier.equals(address, ignoreCase = true) }
                         .collect { advertisement ->
                             send(

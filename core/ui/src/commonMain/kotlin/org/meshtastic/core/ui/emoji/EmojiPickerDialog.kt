@@ -143,11 +143,14 @@ private val DEFAULT_QUICK_REACTIONS = listOf("👍", "❤️", "😂", "😮", "
  *
  * @param selectedEmojis Set of emoji strings already selected (e.g. applied reactions). Matched emojis are highlighted
  *   with a tinted background.
+ * @param singleCodePointOnly Offer only emoji that encode as one code point (no ZWJ sequences, flags, keycaps or skin
+ *   tones), for callers that store a single code point such as `Waypoint.icon`.
  */
 @Composable
 fun EmojiPickerDialog(
     onDismiss: () -> Unit = {},
     selectedEmojis: Set<String> = emptySet(),
+    singleCodePointOnly: Boolean = false,
     onConfirm: (String) -> Unit,
 ) {
     val viewModel: EmojiPickerViewModel = koinViewModel()
@@ -169,7 +172,14 @@ fun EmojiPickerDialog(
     }
 
     val recentEmojis by
-        remember(viewModel.customEmojiFrequency) { derivedStateOf { parseRecents(viewModel.customEmojiFrequency) } }
+        remember(viewModel.customEmojiFrequency, singleCodePointOnly) {
+            derivedStateOf { parseRecents(viewModel.customEmojiFrequency, singleCodePointOnly) }
+        }
+    val (categories, allEmojis) =
+        remember(viewModel.categories, viewModel.allEmojis, singleCodePointOnly) {
+            viewModel.categories.singleCodePointCategoriesOnly(singleCodePointOnly) to
+                viewModel.allEmojis.singleCodePointOnly(singleCodePointOnly)
+        }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -196,8 +206,8 @@ fun EmojiPickerDialog(
                 onCategorySelected = { selectedCategoryIndex = it },
                 selectedEmojis = selectedEmojis,
                 recentEmojis = recentEmojis,
-                categories = viewModel.categories,
-                allEmojis = viewModel.allEmojis,
+                categories = categories,
+                allEmojis = allEmojis,
                 preferredSkinToneIndex = preferredSkinToneIndex,
                 onSkinToneSelect = { viewModel.setPreferredSkinTone(it) },
                 onEmojiSelected = { emoji ->
@@ -719,12 +729,36 @@ private fun SkinToneSurface(emoji: Emoji, onSelect: (String, Int) -> Unit) {
     }
 }
 
+// ── Single Code Point Filter ────────────────────────────────────────────────────
+
+private const val VARIATION_SELECTOR_16 = '\uFE0F'
+
+/**
+ * Whether this emoji is one code point, ignoring the emoji-presentation selector U+FE0F (which a code-point consumer
+ * drops anyway). ZWJ sequences, flags, keycaps and skin-tone variants are all more than one.
+ */
+internal fun String.isSingleCodePointEmoji(): Boolean {
+    val s = filterNot { it == VARIATION_SELECTOR_16 }
+    return when (s.length) {
+        1 -> !s[0].isSurrogate()
+        2 -> s[0].isHighSurrogate() && s[1].isLowSurrogate()
+        else -> false
+    }
+}
+
+/** When [enabled], keeps single-code-point emoji with skin tones off, since a tone modifier is a second code point. */
+private fun List<Emoji>.singleCodePointOnly(enabled: Boolean): List<Emoji> =
+    if (enabled) filter { it.base.isSingleCodePointEmoji() }.map { it.copy(supportsSkinTone = false) } else this
+
+private fun List<EmojiCategory>.singleCodePointCategoriesOnly(enabled: Boolean): List<EmojiCategory> =
+    if (enabled) map { it.copy(emojis = it.emojis.singleCodePointOnly(true)) } else this
+
 // ── Frequency Tracking ─────────────────────────────────────────────────────────
 
 private const val SPLIT_CHAR = ","
 private const val KEY_VALUE_DELIMITER = "="
 
-internal fun parseRecents(raw: String?): List<String> {
+internal fun parseRecents(raw: String?, singleCodePointOnly: Boolean = false): List<String> {
     if (raw.isNullOrBlank()) return emptyList()
     return raw.split(SPLIT_CHAR)
         .mapNotNull { entry ->
@@ -733,6 +767,7 @@ internal fun parseRecents(raw: String?): List<String> {
                 .takeIf { it.size == 2 }
                 ?.let { it[0] to (it[1].toIntOrNull() ?: 0) }
         }
+        .filter { !singleCodePointOnly || it.first.isSingleCodePointEmoji() }
         .sortedByDescending { it.second }
         .take(MAX_RECENTS)
         .map { it.first }

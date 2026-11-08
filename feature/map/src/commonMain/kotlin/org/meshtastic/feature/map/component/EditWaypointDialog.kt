@@ -390,7 +390,8 @@ fun EditWaypointDialog(
             modifier = modifier,
         )
     } else {
-        EmojiPickerDialog(onDismiss = { showEmojiPickerView = false }) { selectedEmoji ->
+        // Waypoint.icon is a single code point (fixed32), so ZWJ sequences like 🐕‍🦺 can't be sent; don't offer them.
+        EmojiPickerDialog(onDismiss = { showEmojiPickerView = false }, singleCodePointOnly = true) { selectedEmoji ->
             showEmojiPickerView = false
             selectedEmoji.firstCodePointOrNull()?.let {
                 waypointInput = waypointInput.newBuilder().also { wb -> wb.icon = it }.build()

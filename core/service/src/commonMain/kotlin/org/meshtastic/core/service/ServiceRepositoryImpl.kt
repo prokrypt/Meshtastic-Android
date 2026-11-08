@@ -48,8 +48,11 @@ open class ServiceRepositoryImpl : ServiceRepository {
     override val connectionState = connectionStateHolder.connectionState
     override val connectionEpochs = connectionStateHolder.connectionEpochs
 
-    override fun setConnectionState(connectionState: ConnectionState) =
+    override fun setConnectionState(connectionState: ConnectionState) {
         connectionStateHolder.setConnectionState(connectionState)
+        // The last handshake label (e.g. "Nodes (30)") would otherwise greet the next connect.
+        if (connectionState == ConnectionState.Connected) _connectionProgress.value = null
+    }
 
     private val _clientNotification = MutableStateFlow<ClientNotification?>(null)
     override val clientNotification: StateFlow<ClientNotification?>

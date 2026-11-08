@@ -68,6 +68,18 @@ class ServiceRepositoryImplTest {
     }
 
     @Test
+    fun connectedClearsHandshakeProgress() {
+        val repository = ServiceRepositoryImpl()
+        repository.setConnectionState(ConnectionState.Connecting)
+        repository.setConnectionProgress("Nodes (30)")
+
+        repository.setConnectionState(ConnectionState.Connected)
+        repository.setConnectionState(ConnectionState.Disconnected)
+
+        assertNull(repository.connectionProgress.value)
+    }
+
+    @Test
     fun connectionEpochsPreserveRapidDepartureAndHandshakeTransitions() = runTest {
         val repository = ServiceRepositoryImpl()
         repository.setConnectionState(ConnectionState.Connected)

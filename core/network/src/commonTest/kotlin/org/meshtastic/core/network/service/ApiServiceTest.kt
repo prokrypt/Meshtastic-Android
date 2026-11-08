@@ -111,7 +111,7 @@ class ApiServiceTest {
     }
 
     @Test
-    fun `fork release id is the firmware version from the manifest name, not the tag`() {
+    fun `fork release id is the firmware version from the manifest name not the tag`() {
         val dl = "https://github.com/prokrypt/firmware/releases/download/v2.8.2-pk.0015"
         val release =
             listOf(
@@ -120,7 +120,10 @@ class ApiServiceTest {
                     publishedAt = "2026-11-08T09:06:37Z",
                     assets =
                     listOf(
-                        GitHubAsset("firmware-nrf52840-2.8.2.21a9f20.zip", "$dl/firmware-nrf52840-2.8.2.21a9f20.zip"),
+                        GitHubAsset(
+                            "firmware-nrf52840-2.8.2.21a9f20.zip",
+                            "$dl/firmware-nrf52840-2.8.2.21a9f20.zip",
+                        ),
                         GitHubAsset("firmware-2.8.2.21a9f20.json", "$dl/firmware-2.8.2.21a9f20.json"),
                     ),
                 ),

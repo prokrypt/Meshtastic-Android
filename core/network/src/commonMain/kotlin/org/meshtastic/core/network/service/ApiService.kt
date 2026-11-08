@@ -71,24 +71,27 @@ internal data class GitHubRelease(
 )
 
 /**
- * Maps the fork's GitHub releases into the API's release shape: the newest published release (by publish time) with
- * a `firmware-<version>.json` target manifest, offered on both the stable and alpha channels. Only one is kept because
- * fork releases share a base version (2.8.2.<commit>), which the picker's version ordering cannot tell apart.
- * `zip_url` is that manifest, as upstream's API now serves it. The release id is the firmware version taken from the
- * manifest's name, not the tag: newer fork tags (`v2.8.2-pk.0015`) only order the releases page, while file names inside
- * the zips still carry the version the firmware reports.
+ * Maps the fork's GitHub releases into the API's release shape: the newest published release (by publish time) with a
+ * `firmware-<version>.json` target manifest, offered on both the stable and alpha channels. Only one is kept because
+ * fork releases share a base version (2.8.2.<commit>), which the picker's version ordering cannot tell apart. `zip_url`
+ * is that manifest, as upstream's API now serves it. The release id is the firmware version taken from the manifest's
+ * name, not the tag: newer fork tags (`v2.8.2-pk.0015`) only order the releases page, while file names inside the zips
+ * still carry the version the firmware reports.
  */
 // `firmware-<version>.json`; per-arch files are `.zip` and the per-target `.mt.json` manifests sit inside them.
 private val MANIFEST_NAME = Regex("""firmware-(\d+\.\d+\.\d+\.[0-9a-f]+)\.json""")
 
 internal fun List<GitHubRelease>.asNetworkFirmwareReleases(): NetworkFirmwareReleases {
-    val newest =
-        filter { !it.draft && it.tagName.isNotBlank() }
-            .sortedByDescending { it.publishedAt.orEmpty() } // ISO-8601 UTC sorts chronologically as text
-            .firstNotNullOfOrNull { release ->
-                release.assets.firstNotNullOfOrNull { asset ->
+    val newest = filter {
+        !it.draft && it.tagName.isNotBlank()
+    }
+        .sortedByDescending { it.publishedAt.orEmpty() } // ISO-8601 UTC sorts chronologically as text
+        .firstNotNullOfOrNull { release ->
+            release.assets
+                .firstNotNullOfOrNull { asset ->
                     MANIFEST_NAME.matchEntire(asset.name)?.let { asset to it.groupValues[1] }
-                }?.let { (manifest, version) ->
+                }
+                ?.let { (manifest, version) ->
                     NetworkFirmwareRelease(
                         id = "v$version",
                         pageUrl = release.htmlUrl,
@@ -97,7 +100,7 @@ internal fun List<GitHubRelease>.asNetworkFirmwareReleases(): NetworkFirmwareRel
                         zipUrl = manifest.downloadUrl,
                     )
                 }
-            }
+        }
     val releases = listOfNotNull(newest)
     return NetworkFirmwareReleases(Releases(alpha = releases, stable = releases))
 }
@@ -173,9 +176,9 @@ class ApiServiceImpl(private val client: HttpClient) : ApiService {
 
     override suspend fun getDeviceLinks(): NetworkDeviceLinksResponse = client.get("resource/deviceLinks").body()
 
-    override suspend fun getFirmwareReleases(): NetworkFirmwareReleases =
-        firmwareJson.decodeFromString<List<GitHubRelease>>(client.get(FORK_FIRMWARE_RELEASES_URL).bodyAsText())
-            .asNetworkFirmwareReleases()
+    override suspend fun getFirmwareReleases(): NetworkFirmwareReleases = firmwareJson
+        .decodeFromString<List<GitHubRelease>>(client.get(FORK_FIRMWARE_RELEASES_URL).bodyAsText())
+        .asNetworkFirmwareReleases()
 
     override suspend fun getFirmwareReleaseManifest(manifestUrl: String): FirmwareReleaseManifest =
         decodeFirmwareReleaseManifest(client.get(manifestUrl).bodyAsText())

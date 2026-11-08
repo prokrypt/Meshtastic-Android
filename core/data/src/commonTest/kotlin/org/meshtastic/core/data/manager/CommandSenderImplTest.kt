@@ -218,6 +218,43 @@ class CommandSenderImplTest {
         assertFailsWith<IllegalArgumentException> { commandSender.sendData(packet) }
     }
 
+    // --- key push before PKC ---
+
+    private fun keyedDestination(): ByteString {
+        val key = ByteString.of(*ByteArray(32) { 7 })
+        val user = User.Builder().also { wb -> wb.id = "!dest" }.build()
+        every { nodeManager.nodeDBbyNodeNum } returns
+            mapOf(DEST_NODE to Node(num = DEST_NODE, user = user, publicKey = key))
+        return key
+    }
+
+    @Test
+    fun pkcUnicast_pushesTheDestinationKeyOncePerMinute() = runTest {
+        val key = keyedDestination()
+        val contacts = mutableListOf<ToRadio>()
+        every { packetHandler.sendToRadio(capture(contacts)) } returns Unit
+        everySuspend { packetHandler.sendToRadio(any<MeshPacket>()) } returns true
+
+        commandSender.requestTelemetry(requestId = 0, destNum = DEST_NODE, typeValue = 0)
+        commandSender.sendAdmin(DEST_NODE) { AdminMessage.Builder().also { wb -> wb.get_owner_request = true }.build() }
+
+        val packet = requireNotNull(contacts.single().packet)
+        assertEquals(MY_NODE_NUM, packet.to)
+        val contact = requireNotNull(AdminMessage.ADAPTER.decode(requireNotNull(packet.decoded).payload).add_contact)
+        assertEquals(DEST_NODE, contact.node_num)
+        assertEquals(key, contact.user?.public_key)
+    }
+
+    @Test
+    fun pkcExemptUnicast_pushesNoKey() = runTest {
+        keyedDestination()
+        everySuspend { packetHandler.sendToRadio(any<MeshPacket>()) } returns true
+
+        commandSender.requestTraceroute(requestId = 0, destNum = DEST_NODE)
+
+        verify(exactly(0)) { packetHandler.sendToRadio(any<ToRadio>()) }
+    }
+
     // --- sendAdmin ---
 
     @Test

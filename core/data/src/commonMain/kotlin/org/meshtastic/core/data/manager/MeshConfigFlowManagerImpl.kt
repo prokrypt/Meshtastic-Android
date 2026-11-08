@@ -24,6 +24,7 @@ import kotlinx.coroutines.delay
 import org.koin.core.annotation.Single
 import org.meshtastic.core.common.di.ServiceScope
 import org.meshtastic.core.common.util.handledLaunch
+import org.meshtastic.core.common.util.nowSeconds
 import org.meshtastic.core.common.util.safeCatching
 import org.meshtastic.core.model.ConnectionState
 import org.meshtastic.core.model.DeviceVersion
@@ -32,6 +33,7 @@ import org.meshtastic.core.repository.CommandSender
 import org.meshtastic.core.repository.HandshakeConstants
 import org.meshtastic.core.repository.MeshConfigFlowManager
 import org.meshtastic.core.repository.MeshConnectionManager
+import org.meshtastic.core.repository.MeshPrefs
 import org.meshtastic.core.repository.NodeManager
 import org.meshtastic.core.repository.NodeRepository
 import org.meshtastic.core.repository.NotificationPrefs
@@ -61,6 +63,7 @@ class MeshConfigFlowManagerImpl(
     private val heartbeatSender: DataLayerHeartbeatSender,
     private val notificationPrefs: NotificationPrefs,
     private val radioInterfaceService: RadioInterfaceService,
+    private val meshPrefs: MeshPrefs,
     private val scope: ServiceScope,
 ) : MeshConfigFlowManager {
     private val wantConfigDelay = 100L
@@ -104,6 +107,10 @@ class MeshConfigFlowManagerImpl(
             val myNodeInfo: SharedMyNodeInfo,
             val nodes: List<NodeInfo> = emptyList(),
             val refresh: Boolean = false,
+            /**
+             * When the node list was requested; the next trimmed sync starts from here, so nodes heard mid-dump recur.
+             */
+            val requestedSeconds: Long = 0L,
         ) : HandshakeState()
 
         /** Both stages finished. The app is fully connected. */
@@ -220,6 +227,7 @@ class MeshConfigFlowManagerImpl(
                 session = state.session,
                 myNodeInfo = finalizedInfo,
                 nodes = state.earlyNodes,
+                requestedSeconds = nowSeconds,
             )
         Logger.i { "myNodeInfo committed" }
         connectionManager.value.onRadioConfigLoaded()
@@ -231,8 +239,17 @@ class MeshConfigFlowManagerImpl(
                 runWhileForSession(session, "inter-stage heartbeat") { heartbeatSender.sendHeartbeat("inter-stage") }
             if (!heartbeatSent) return@handledLaunch
             delay(wantConfigDelay)
+            val sinceMinutes =
+                nodesSinceAgeMinutes(
+                    lastSyncSeconds = meshPrefs.lastNodeSync(finalizedInfo.myNodeNum),
+                    nowSeconds = nowSeconds,
+                    appNodeCount = nodeManager.nodeDBbyNodeNum.size,
+                    radioNodeCount = state.rawMyNodeInfo.nodedb_count,
+                )
             runForSession(session) {
                 Logger.i { "Requesting NodeInfo (Stage 2)" }
+                // Same coroutine, back to back: the radio sees the nodes-since marker right before the request.
+                sinceMinutes?.let(heartbeatSender::sendNodesSince)
                 connectionManager.value.startNodeInfoOnly()
             }
         }
@@ -324,6 +341,7 @@ class MeshConfigFlowManagerImpl(
                 serviceStateWriter.setConnectionState(ConnectionState.Connected)
             }
         if (!published) return
+        meshPrefs.setLastNodeSync(info.myNodeNum, state.requestedSeconds)
 
         safeCatching { analytics.setDeviceAttributes(info.firmwareVersion ?: "unknown", info.model ?: "unknown") }
             .onFailure { e -> Logger.w(e) { "Failed to set post-handshake analytics attributes" } }
@@ -551,6 +569,27 @@ class MeshConfigFlowManagerImpl(
         notificationPrefs.applyEventFirmwareNodeEventDefault(isEventFirmware = edition != FirmwareEdition.VANILLA)
     }
 }
+
+/** Longest gap a trimmed node list may cover; older syncs get the full list so missed flag changes heal daily. */
+internal const val MAX_NODES_SINCE_AGE_MINUTES = 24 * 60
+
+/**
+ * Minutes since the last node-list sync with this radio, or null to ask for the full list: no sync on record, a clock
+ * that went backwards, a sync older than [MAX_NODES_SINCE_AGE_MINUTES], or an app node DB holding fewer nodes than the
+ * radio (cleared, switched or never filled).
+ */
+internal fun nodesSinceAgeMinutes(
+    lastSyncSeconds: Long,
+    nowSeconds: Long,
+    appNodeCount: Int,
+    radioNodeCount: Int,
+): Int? {
+    if (lastSyncSeconds <= 0L || nowSeconds < lastSyncSeconds || appNodeCount < radioNodeCount) return null
+    val minutes = (nowSeconds - lastSyncSeconds + SECONDS_PER_MINUTE - 1) / SECONDS_PER_MINUTE
+    return minutes.takeIf { it <= MAX_NODES_SINCE_AGE_MINUTES }?.toInt()
+}
+
+private const val SECONDS_PER_MINUTE = 60L
 
 private fun List<NodeInfo>.withNodeInfo(info: NodeInfo): List<NodeInfo> {
     val index = indexOfFirst { it.num == info.num }

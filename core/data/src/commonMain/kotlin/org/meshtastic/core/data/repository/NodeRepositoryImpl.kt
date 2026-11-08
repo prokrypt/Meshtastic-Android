@@ -65,6 +65,7 @@ import org.meshtastic.core.model.NodeAddress
 import org.meshtastic.core.model.NodeSortOption
 import org.meshtastic.core.model.matchesSearch
 import org.meshtastic.core.model.util.onlineTimeThreshold
+import org.meshtastic.core.repository.MeshPrefs
 import org.meshtastic.core.repository.NodeRepository
 import org.meshtastic.proto.DeviceMetadata
 import org.meshtastic.proto.LocalStats
@@ -81,6 +82,7 @@ class NodeRepositoryImpl(
     private val nodeInfoWriteDataSource: NodeInfoWriteDataSource,
     private val dispatchers: CoroutineDispatchers,
     private val localStatsDataSource: LocalStatsDataSource,
+    private val meshPrefs: MeshPrefs,
 ) : NodeRepository {
     /** Hardware info about our local device (can be null if not connected). */
     override val myNodeInfo: StateFlow<MyNodeInfo?> =
@@ -358,6 +360,8 @@ class NodeRepositoryImpl(
     override suspend fun clearNodeDB(preserveFavorites: Boolean) = withContext(dispatchers.io) {
         forgetUnsavedNodes()
         nodeInfoWriteDataSource.clearNodeDB(preserveFavorites)
+        // A trimmed node-list sync assumes the app still holds what it last synced; this DB no longer does.
+        meshPrefs.clearNodeSyncs()
     }
 
     /** Clears the local node's connection info. */

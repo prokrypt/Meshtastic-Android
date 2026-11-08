@@ -46,6 +46,7 @@ import org.meshtastic.core.database.entity.NodeWithRelations
 import org.meshtastic.core.di.CoroutineDispatchers
 import org.meshtastic.core.model.MeshLog
 import org.meshtastic.core.testing.FakeLocalStatsDataSource
+import org.meshtastic.core.testing.FakeMeshPrefs
 import org.meshtastic.proto.LocalStats
 import org.meshtastic.proto.User
 import kotlin.test.AfterTest
@@ -94,6 +95,7 @@ abstract class CommonNodeRepositoryTest {
                 writeDataSource,
                 dispatchers,
                 localStatsDataSource,
+                FakeMeshPrefs(),
             )
     }
 
@@ -180,6 +182,7 @@ abstract class CommonNodeRepositoryTest {
                     failingWriteDataSource,
                     dispatchers,
                     localStatsDataSource,
+                    FakeMeshPrefs(),
                 )
 
                 // Coroutine stack-trace recovery may report a copy, so compare what was reported, not identity.
@@ -214,6 +217,7 @@ abstract class CommonNodeRepositoryTest {
                 writeDataSource,
                 dispatchers,
                 localStatsDataSource,
+                FakeMeshPrefs(),
             )
         val before = repo.nodeDBbyNum.filter { it.size == 2 }.first()
 
@@ -250,6 +254,7 @@ abstract class CommonNodeRepositoryTest {
             writeDataSource,
             dispatchers,
             localStatsDataSource,
+            FakeMeshPrefs(),
         )
     }
 

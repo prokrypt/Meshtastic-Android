@@ -86,6 +86,7 @@ class MeshConfigFlowManagerImplTest {
     private val packetHandler = mock<PacketHandler>(MockMode.autofill)
     private val notificationPrefs = mock<NotificationPrefs>(MockMode.autofill)
     private val radioInterfaceService = mock<RadioInterfaceService>(MockMode.autofill)
+    private val meshPrefs = org.meshtastic.core.testing.FakeMeshPrefs()
 
     private val testDispatcher = StandardTestDispatcher()
     private val testScope = TestScope(testDispatcher)
@@ -171,6 +172,7 @@ class MeshConfigFlowManagerImplTest {
                 heartbeatSender = DataLayerHeartbeatSender(packetHandler),
                 notificationPrefs = notificationPrefs,
                 radioInterfaceService = radioInterfaceService,
+                meshPrefs = meshPrefs,
                 scope = testScope.asServiceScope(),
             )
     }
@@ -433,6 +435,56 @@ class MeshConfigFlowManagerImplTest {
             heartbeats[0].heartbeat!!.nonce != 0,
             "Inter-stage heartbeat should have a non-zero nonce",
         )
+    }
+
+    private fun TestScope.stage1HeartbeatNonces(myInfo: ProtoMyNodeInfo): List<Int> {
+        val sentPackets = mutableListOf<org.meshtastic.proto.ToRadio>()
+        every { packetHandler.sendToRadio(any<org.meshtastic.proto.ToRadio>()) } calls
+            { call ->
+                sentPackets.add(call.arg(0))
+            }
+        handleMyInfo(myInfo)
+        advanceUntilIdle()
+        manager.handleLocalMetadata(metadata)
+        advanceUntilIdle()
+        sentPackets.clear()
+        manager.handleConfigComplete(HandshakeConstants.CONFIG_NONCE)
+        advanceTimeBy(STAGE_TRANSITION_ADVANCE_MS)
+        runCurrent()
+        verify { connectionManager.startNodeInfoOnly() }
+        return sentPackets.mapNotNull { it.heartbeat?.nonce }
+    }
+
+    @Test
+    fun `Stage 1 complete asks for nodes heard since a recent sync`() = testScope.runTest {
+        meshPrefs.nodeSyncs[myNodeNum] = org.meshtastic.core.common.util.nowSeconds - 10 * 60
+
+        val nonces = stage1HeartbeatNonces(protoMyNodeInfo)
+
+        val marker = nonces.last()
+        assertEquals(DataLayerHeartbeatSender.NODES_SINCE_TAG, marker and 0xFFFF0000.toInt())
+        assertTrue((marker and 0xFFFF) in 10..11, "age in minutes, was ${marker and 0xFFFF}")
+    }
+
+    @Test
+    fun `Stage 1 complete asks for the full list when the radio holds nodes the app lacks`() = testScope.runTest {
+        meshPrefs.nodeSyncs[myNodeNum] = org.meshtastic.core.common.util.nowSeconds - 10 * 60
+        val radioWithNodes = protoMyNodeInfo.newBuilder().also { it.nodedb_count = 5 }.build()
+
+        val nonces = stage1HeartbeatNonces(radioWithNodes)
+
+        assertTrue(nonces.none { it and 0xFFFF0000.toInt() == DataLayerHeartbeatSender.NODES_SINCE_TAG })
+    }
+
+    @Test
+    fun `nodesSinceAgeMinutes falls back to the full list`() {
+        val now = 1_800_000_000L
+        assertEquals(1, nodesSinceAgeMinutes(now - 1, now, appNodeCount = 3, radioNodeCount = 3))
+        assertEquals(MAX_NODES_SINCE_AGE_MINUTES, nodesSinceAgeMinutes(now - 24 * 3600, now, 3, 3))
+        assertEquals(null, nodesSinceAgeMinutes(now - 24 * 3600 - 60, now, 3, 3)) // older than a day
+        assertEquals(null, nodesSinceAgeMinutes(0, now, 3, 3)) // never synced
+        assertEquals(null, nodesSinceAgeMinutes(now + 60, now, 3, 3)) // clock went backwards
+        assertEquals(null, nodesSinceAgeMinutes(now - 60, now, appNodeCount = 2, radioNodeCount = 3))
     }
 
     @Test
@@ -892,6 +944,7 @@ class MeshConfigFlowManagerImplTest {
 
         // After complete, newNodeCount should be 0 (state is Complete)
         assertEquals(0, manager.newNodeCount)
+        assertTrue((meshPrefs.nodeSyncs[myNodeNum] ?: 0L) > 0L, "a finished sync is recorded for the next trim")
     }
 
     // ---------- Interrupted handshake ----------

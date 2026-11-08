@@ -265,6 +265,12 @@ class BootCompleteReceiverTest {
         override fun getStoreForwardLastRequest(address: String?): StateFlow<Int> = MutableStateFlow(0)
 
         override fun setStoreForwardLastRequest(address: String?, timestamp: Int) = Unit
+
+        override suspend fun lastNodeSync(nodeNum: Int): Long = 0L
+
+        override fun setLastNodeSync(nodeNum: Int, epochSeconds: Long) = Unit
+
+        override fun clearNodeSyncs() = Unit
     }
 
     private class StallingDispatcher : CoroutineDispatcher() {

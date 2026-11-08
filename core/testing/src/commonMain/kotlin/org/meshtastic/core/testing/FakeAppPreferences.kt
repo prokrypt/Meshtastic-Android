@@ -370,6 +370,16 @@ class FakeMeshPrefs : MeshPrefs {
     override fun setStoreForwardLastRequest(address: String?, timestamp: Int) {
         lastRequest.getOrPut(address) { MutableStateFlow(timestamp) }.value = timestamp
     }
+
+    val nodeSyncs = mutableMapOf<Int, Long>()
+
+    override suspend fun lastNodeSync(nodeNum: Int): Long = nodeSyncs[nodeNum] ?: 0L
+
+    override fun setLastNodeSync(nodeNum: Int, epochSeconds: Long) {
+        nodeSyncs[nodeNum] = epochSeconds
+    }
+
+    override fun clearNodeSyncs() = nodeSyncs.clear()
 }
 
 class FakeAppFunctionsPrefs : AppFunctionsPrefs {

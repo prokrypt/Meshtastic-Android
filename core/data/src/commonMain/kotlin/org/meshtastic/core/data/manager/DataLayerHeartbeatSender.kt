@@ -57,4 +57,24 @@ class DataLayerHeartbeatSender(private val packetHandler: PacketHandler) {
             Logger.w(e) { "[$tag] Failed to enqueue heartbeat; proceeding" }
         }
     }
+
+    /**
+     * Tells fork firmware this app synced the node list [ageMinutes] ago, so the next nodes-only request skips
+     * non-favorite nodes not heard since. Stock firmware reads it as a plain keepalive and sends the full list.
+     */
+    fun sendNodesSince(ageMinutes: Int) {
+        val nonce = NODES_SINCE_TAG or (ageMinutes and NODES_SINCE_AGE_MASK)
+        packetHandler.sendToRadio(
+            ToRadio.Builder()
+                .also { wb -> wb.heartbeat = Heartbeat.Builder().also { it.nonce = nonce }.build() }
+                .build(),
+        )
+        Logger.i { "Asking for nodes heard in the last $ageMinutes min" }
+    }
+
+    internal companion object {
+        /** Firmware `MeshService::HEARTBEAT_NODES_SINCE_TAG`; the low 16 bits carry the age in minutes. */
+        const val NODES_SINCE_TAG = 0xBA7D0000.toInt()
+        const val NODES_SINCE_AGE_MASK = 0xFFFF
+    }
 }

@@ -409,6 +409,14 @@ interface MeshPrefs {
     fun getStoreForwardLastRequest(address: String?): StateFlow<Int>
 
     fun setStoreForwardLastRequest(address: String?, timestamp: Int)
+
+    /** Epoch seconds when this app last finished a node-list sync with radio [nodeNum]; 0 when never or unknown. */
+    suspend fun lastNodeSync(nodeNum: Int): Long
+
+    fun setLastNodeSync(nodeNum: Int, epochSeconds: Long)
+
+    /** Forgets every node-list sync, so the next connection asks each radio for its full list. */
+    fun clearNodeSyncs()
 }
 
 /** Reactive interface for TAK server settings. */

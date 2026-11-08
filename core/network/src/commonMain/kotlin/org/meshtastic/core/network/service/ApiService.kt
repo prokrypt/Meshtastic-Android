@@ -74,17 +74,23 @@ internal data class GitHubRelease(
  * Maps the fork's GitHub releases into the API's release shape: the newest published release (by publish time) with
  * a `firmware-<version>.json` target manifest, offered on both the stable and alpha channels. Only one is kept because
  * fork releases share a base version (2.8.2.<commit>), which the picker's version ordering cannot tell apart.
- * `zip_url` is that manifest, as upstream's API now serves it.
+ * `zip_url` is that manifest, as upstream's API now serves it. The release id is the firmware version taken from the
+ * manifest's name, not the tag: newer fork tags (`v2.8.2-pk.0015`) only order the releases page, while file names inside
+ * the zips still carry the version the firmware reports.
  */
+// `firmware-<version>.json`; per-arch files are `.zip` and the per-target `.mt.json` manifests sit inside them.
+private val MANIFEST_NAME = Regex("""firmware-(\d+\.\d+\.\d+\.[0-9a-f]+)\.json""")
+
 internal fun List<GitHubRelease>.asNetworkFirmwareReleases(): NetworkFirmwareReleases {
     val newest =
         filter { !it.draft && it.tagName.isNotBlank() }
             .sortedByDescending { it.publishedAt.orEmpty() } // ISO-8601 UTC sorts chronologically as text
             .firstNotNullOfOrNull { release ->
-                val manifestName = "firmware-${release.tagName.removePrefix("v")}.json"
-                release.assets.firstOrNull { it.name == manifestName }?.let { manifest ->
+                release.assets.firstNotNullOfOrNull { asset ->
+                    MANIFEST_NAME.matchEntire(asset.name)?.let { asset to it.groupValues[1] }
+                }?.let { (manifest, version) ->
                     NetworkFirmwareRelease(
-                        id = release.tagName,
+                        id = "v$version",
                         pageUrl = release.htmlUrl,
                         releaseNotes = release.body.orEmpty(),
                         title = release.name?.takeIf { it.isNotBlank() } ?: release.tagName,

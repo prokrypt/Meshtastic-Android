@@ -82,7 +82,10 @@ class ApiServiceTest {
                          {"name": "firmware-2.8.2.926f09e.json",
                           "browser_download_url": "$dl/v2.8.2.926f09e/firmware-2.8.2.926f09e.json"}
                        ]},
-                      {"tag_name": "v2.8.1.0000000", "draft": false, "assets": []}
+                      {"tag_name": "v2.8.1.0000000", "draft": false, "assets": []},
+                      {"tag_name": "v2.8.2-pk.0003", "draft": false, "published_at": "2026-11-08T08:00:00Z",
+                       "assets": [{"name": "firmware-2.8.2.0ld0001.json",
+                                   "browser_download_url": "$dl/v2.8.2-pk.0003/firmware-2.8.2.0ld0001.json"}]}
                     ]
                     """
                     .trimIndent(),
@@ -105,6 +108,31 @@ class ApiServiceTest {
         } finally {
             client.close()
         }
+    }
+
+    @Test
+    fun `fork release id is the firmware version from the manifest name, not the tag`() {
+        val dl = "https://github.com/prokrypt/firmware/releases/download/v2.8.2-pk.0015"
+        val release =
+            listOf(
+                GitHubRelease(
+                    tagName = "v2.8.2-pk.0015",
+                    publishedAt = "2026-11-08T09:06:37Z",
+                    assets =
+                    listOf(
+                        GitHubAsset("firmware-nrf52840-2.8.2.21a9f20.zip", "$dl/firmware-nrf52840-2.8.2.21a9f20.zip"),
+                        GitHubAsset("firmware-2.8.2.21a9f20.json", "$dl/firmware-2.8.2.21a9f20.json"),
+                    ),
+                ),
+            )
+                .asNetworkFirmwareReleases()
+                .releases
+                .alpha
+                .single()
+
+        assertEquals("v2.8.2.21a9f20", release.id)
+        assertEquals("v2.8.2-pk.0015", release.title)
+        assertEquals("$dl/firmware-2.8.2.21a9f20.json", release.zipUrl)
     }
 
     @Test

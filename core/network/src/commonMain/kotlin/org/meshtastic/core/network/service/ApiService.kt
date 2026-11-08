@@ -66,28 +66,33 @@ internal data class GitHubRelease(
     @SerialName("html_url") val htmlUrl: String = "",
     @SerialName("body") val body: String? = null,
     @SerialName("draft") val draft: Boolean = false,
+    @SerialName("published_at") val publishedAt: String? = null,
     @SerialName("assets") val assets: List<GitHubAsset> = emptyList(),
 )
 
 /**
- * Maps the fork's GitHub releases into the API's release shape. The fork has a single release line, so every published
- * release is offered on both the stable and alpha channels. `zip_url` is the release's `firmware-<version>.json` target
- * manifest, as upstream's API now serves it; a release without one cannot be resolved and is skipped.
+ * Maps the fork's GitHub releases into the API's release shape: the newest published release (by publish time) with
+ * a `firmware-<version>.json` target manifest, offered on both the stable and alpha channels. Only one is kept because
+ * fork releases share a base version (2.8.2.<commit>), which the picker's version ordering cannot tell apart.
+ * `zip_url` is that manifest, as upstream's API now serves it.
  */
 internal fun List<GitHubRelease>.asNetworkFirmwareReleases(): NetworkFirmwareReleases {
-    val releases =
+    val newest =
         filter { !it.draft && it.tagName.isNotBlank() }
-            .mapNotNull { release ->
+            .sortedByDescending { it.publishedAt.orEmpty() } // ISO-8601 UTC sorts chronologically as text
+            .firstNotNullOfOrNull { release ->
                 val manifestName = "firmware-${release.tagName.removePrefix("v")}.json"
-                val manifest = release.assets.firstOrNull { it.name == manifestName } ?: return@mapNotNull null
-                NetworkFirmwareRelease(
-                    id = release.tagName,
-                    pageUrl = release.htmlUrl,
-                    releaseNotes = release.body.orEmpty(),
-                    title = release.name?.takeIf { it.isNotBlank() } ?: release.tagName,
-                    zipUrl = manifest.downloadUrl,
-                )
+                release.assets.firstOrNull { it.name == manifestName }?.let { manifest ->
+                    NetworkFirmwareRelease(
+                        id = release.tagName,
+                        pageUrl = release.htmlUrl,
+                        releaseNotes = release.body.orEmpty(),
+                        title = release.name?.takeIf { it.isNotBlank() } ?: release.tagName,
+                        zipUrl = manifest.downloadUrl,
+                    )
+                }
             }
+    val releases = listOfNotNull(newest)
     return NetworkFirmwareReleases(Releases(alpha = releases, stable = releases))
 }
 

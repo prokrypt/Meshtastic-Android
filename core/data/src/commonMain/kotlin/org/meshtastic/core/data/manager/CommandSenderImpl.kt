@@ -28,6 +28,7 @@ import org.meshtastic.core.common.di.ServiceScope
 import org.meshtastic.core.common.util.nowMillis
 import org.meshtastic.core.model.DataPacket
 import org.meshtastic.core.model.MessageStatus
+import org.meshtastic.core.model.Node
 import org.meshtastic.core.model.NodeAddress
 import org.meshtastic.core.model.Position
 import org.meshtastic.core.model.TelemetryType
@@ -63,6 +64,7 @@ import org.meshtastic.proto.NeighborInfo
 import org.meshtastic.proto.Paxcount
 import org.meshtastic.proto.PortNum
 import org.meshtastic.proto.PowerMetrics
+import org.meshtastic.proto.SharedContact
 import org.meshtastic.proto.Telemetry
 import org.meshtastic.proto.ToRadio
 import kotlin.math.absoluteValue
@@ -82,6 +84,9 @@ class CommandSenderImpl(
     private val scope: ServiceScope,
 ) : CommandSender {
     private val currentPacketId = atomic(Random(nowMillis).nextLong().absoluteValue)
+
+    /** Node number to when its key was last pushed to the radio, see [shareKeyBeforePkc]. */
+    private val keyPushedAt = MutableStateFlow<Map<Int, Long>>(emptyMap())
 
     private val localConfig = MutableStateFlow(LocalConfig.Builder().build())
     private val channelSet = MutableStateFlow(ChannelSet.Builder().build())
@@ -593,6 +598,8 @@ class CommandSenderImpl(
             actualChannel = 0
         }
 
+        shareKeyBeforePkc(to, decoded.portnum)
+
         return MeshPacket.Builder()
             .also { wb ->
                 wb.from = nodeManager.myNodeNum.value ?: 0
@@ -608,6 +615,36 @@ class CommandSenderImpl(
                 wb.decoded = decoded
             }
             .build()
+    }
+
+    /**
+     * The radio PKC-encrypts every unicast it originates except [PKC_EXEMPT_PORTS] and refuses one with
+     * PKI_SEND_FAIL_PUBLIC_KEY when its NodeDB has no key for the target. Its NodeDB is small (nRF52: 120 hot + 100
+     * warm) and a busy mesh evicts keys within minutes, so push the key the app holds first, as add_contact (RAM-only
+     * on the fork firmware for non-favorites). Dispatched immediately, so it reaches the radio ahead of the queued
+     * packet; at most once a minute per node, so a remote-config burst sends one.
+     */
+    private fun shareKeyBeforePkc(to: Int, portnum: PortNum) {
+        val myNum = nodeManager.myNodeNum.value ?: return
+        if (to == myNum || to == NodeAddress.NODENUM_BROADCAST || portnum in PKC_EXEMPT_PORTS) return
+        nodeManager.nodeDBbyNodeNum[to]?.let { shareKey(myNum, it) }
+    }
+
+    private fun shareKey(myNum: Int, node: Node) {
+        val key = node.publicKey ?: node.user.public_key
+        val now = nowMillis
+        val due = keyPushedAt.value[node.num]?.let { now - it >= KEY_PUSH_INTERVAL_MS } ?: true
+        if (key.size != PUBLIC_KEY_SIZE || !due) return
+        keyPushedAt.value = keyPushedAt.value + (node.num to now)
+        val contact =
+            SharedContact.Builder()
+                .also { wb ->
+                    wb.node_num = node.num
+                    wb.user = node.user.newBuilder().also { u -> u.public_key = key }.build()
+                    wb.manually_verified = node.manuallyVerified
+                }
+                .build()
+        sendAdminImmediate(myNum) { AdminMessage.Builder().also { wb -> wb.add_contact = contact }.build() }
     }
 
     private fun buildAdminPacket(
@@ -640,5 +677,12 @@ class CommandSenderImpl(
         private const val ADMIN_CHANNEL_NAME = "admin"
 
         private const val DEFAULT_HOP_LIMIT = 3
+
+        private const val PUBLIC_KEY_SIZE = 32
+        private const val KEY_PUSH_INTERVAL_MS = 60_000L
+
+        /** Ports the firmware never PKC-encrypts (Router.cpp wouldEncryptWithPKC). */
+        private val PKC_EXEMPT_PORTS =
+            setOf(PortNum.TRACEROUTE_APP, PortNum.NODEINFO_APP, PortNum.ROUTING_APP, PortNum.POSITION_APP)
     }
 }

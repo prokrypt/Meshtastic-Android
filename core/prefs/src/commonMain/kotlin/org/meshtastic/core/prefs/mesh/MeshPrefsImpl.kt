@@ -18,6 +18,7 @@ package org.meshtastic.core.prefs.mesh
 
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import kotlinx.atomicfu.atomic
 import kotlinx.collections.immutable.persistentMapOf
@@ -79,6 +80,14 @@ class MeshPrefsImpl(private val dataStore: MeshDataStore, dispatchers: Coroutine
             }
         }
     }
+
+    override suspend fun lastNodeSync(nodeNum: Int): Long = dataStore.data.first()[nodeSyncKey(nodeNum)] ?: 0L
+
+    override fun setLastNodeSync(nodeNum: Int, epochSeconds: Long) {
+        scope.launch { dataStore.edit { prefs -> prefs[nodeSyncKey(nodeNum)] = epochSeconds } }
+    }
+
+    private fun nodeSyncKey(nodeNum: Int) = longPreferencesKey("node-sync-${nodeNum.toUInt()}")
 
     private fun storeForwardKey(address: String?): String = "store-forward-last-request-${normalizeAddress(address)}"
 

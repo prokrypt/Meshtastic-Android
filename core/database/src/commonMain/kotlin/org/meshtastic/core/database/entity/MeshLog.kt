@@ -47,7 +47,16 @@ import org.meshtastic.core.model.MeshLog as ExternalMeshLog
 @Suppress("EmptyCatchBlock", "SwallowedException", "ConstructorParameterNaming")
 @Entity(
     tableName = "log",
-    indices = [Index(value = ["from_num"]), Index(value = ["port_num"]), Index(value = ["received_date"])],
+    // The composites serve the per-node / per-port flows (filter + ORDER BY received_date DESC LIMIT n) in index
+    // order. The single-column from_num / port_num indices stay: logStampFrom / logStampOnPort need rowid order.
+    indices =
+    [
+        Index(value = ["from_num"]),
+        Index(value = ["port_num"]),
+        Index(value = ["received_date"]),
+        Index(value = ["from_num", "port_num", "received_date"]),
+        Index(value = ["port_num", "received_date"]),
+    ],
 )
 data class MeshLog(
     @PrimaryKey val uuid: String,

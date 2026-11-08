@@ -32,11 +32,16 @@ import org.meshtastic.core.database.entity.MeshLogRow
 interface MeshLogDao {
 
     companion object {
-        /** Shared SQL for querying logs by from_num and port_num, used by both Flow and snapshot variants. */
+        /**
+         * Shared SQL for querying logs by from_num and port_num, used by both Flow and snapshot variants. A UNION ALL
+         * rather than `(:portNum = -1 OR port_num = :portNum)`: the OR stops SQLite from using port_num in the
+         * (from_num, port_num, received_date) index, so a single-port read sorted all of the node's rows.
+         */
         private const val LOGS_FROM_QUERY =
             """
-            SELECT * FROM log
-            WHERE from_num = :fromNum AND (:portNum = -1 OR port_num = :portNum)
+            SELECT * FROM log WHERE from_num = :fromNum AND port_num = :portNum
+            UNION ALL
+            SELECT * FROM log WHERE from_num = :fromNum AND :portNum = -1
             ORDER BY received_date DESC LIMIT :maxItem
             """
     }

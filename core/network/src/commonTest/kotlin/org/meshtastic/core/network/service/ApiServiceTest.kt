@@ -69,7 +69,11 @@ class ApiServiceTest {
                 """
                     [
                       {"tag_name": "v2.8.3.aaaaaaa", "draft": true, "assets": []},
+                      {"tag_name": "v2.8.2.0ld0000", "draft": false, "published_at": "2026-11-07T18:27:42Z",
+                       "assets": [{"name": "firmware-2.8.2.0ld0000.json",
+                                   "browser_download_url": "$dl/v2.8.2.0ld0000/firmware-2.8.2.0ld0000.json"}]},
                       {"tag_name": "v2.8.2.926f09e", "name": "Firmware (no-auto-writes) 2.8.2.926f09e Alpha",
+                       "published_at": "2026-11-08T09:06:37Z",
                        "html_url": "https://github.com/prokrypt/firmware/releases/tag/v2.8.2.926f09e",
                        "body": null, "draft": false, "prerelease": true,
                        "assets": [
@@ -91,7 +95,8 @@ class ApiServiceTest {
             val releases = ApiServiceImpl(client).getFirmwareReleases().releases
 
             assertEquals("https://api.github.com/repos/prokrypt/firmware/releases?per_page=20", requested)
-            val release = releases.alpha.single() // draft and manifest-less releases are skipped
+            // Only the newest published release with a manifest: drafts, manifest-less and older ones are dropped.
+            val release = releases.alpha.single()
             assertEquals(releases.alpha, releases.stable)
             assertEquals("v2.8.2.926f09e", release.id)
             assertEquals("Firmware (no-auto-writes) 2.8.2.926f09e Alpha", release.title)

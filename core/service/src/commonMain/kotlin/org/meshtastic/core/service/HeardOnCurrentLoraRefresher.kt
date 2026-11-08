@@ -26,6 +26,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import org.meshtastic.core.common.state.RadioOperation
 import org.meshtastic.core.common.state.RadioOperationLock
 import org.meshtastic.core.model.ConnectionState
+import org.meshtastic.core.model.heardSlot
 import org.meshtastic.core.model.util.decodeOrNull
 import org.meshtastic.core.repository.MeshConfigFlowManager
 import org.meshtastic.core.repository.NodeManager
@@ -64,7 +65,7 @@ internal class HeardOnCurrentLoraRefresher(
     suspend fun beforeLocalWrite(config: Config, packetId: Int) {
         val lora = config.lora ?: return
         val current = radioConfigRepository.localConfigFlow.firstOrNull()?.lora
-        if (current == null || lora.slot != current.slot) refreshAfterAck(packetId)
+        if (current == null || lora.heardSlot != current.heardSlot) refreshAfterAck(packetId)
     }
 
     /** Call before sending [packetId], so its routing ACK cannot arrive ahead of the subscription. */
@@ -102,10 +103,3 @@ internal class HeardOnCurrentLoraRefresher(
         val REBOOT_WINDOW: Duration = 8.seconds
     }
 }
-
-/** The LoRa fields firmware's slot fingerprint covers; the unused half of preset or custom modem moves nothing. */
-private val Config.LoRaConfig.slot: List<Any?>
-    get() {
-        val modem = if (use_preset) listOf(modem_preset) else listOf(bandwidth, spread_factor, coding_rate)
-        return listOf(region, use_preset, override_frequency, channel_num) + modem
-    }

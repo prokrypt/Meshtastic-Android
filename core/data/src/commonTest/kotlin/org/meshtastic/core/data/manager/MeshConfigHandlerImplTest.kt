@@ -43,7 +43,10 @@ import org.meshtastic.core.repository.RadioConfigRepository
 import org.meshtastic.core.repository.RadioInterfaceService
 import org.meshtastic.core.repository.RadioSessionContext
 import org.meshtastic.core.repository.ServiceRepository
+import org.meshtastic.core.testing.FakeMeshPrefs
 import org.meshtastic.proto.Channel
+import org.meshtastic.proto.ChannelSet
+import org.meshtastic.proto.ChannelSettings
 import org.meshtastic.proto.Config
 import org.meshtastic.proto.DeviceUIConfig
 import org.meshtastic.proto.LoRaRegionPresetMap
@@ -59,6 +62,10 @@ import kotlin.test.assertTrue
 @OptIn(ExperimentalCoroutinesApi::class)
 class MeshConfigHandlerImplTest {
 
+    private companion object {
+        const val MY_NODE_NUM = 0x1234
+    }
+
     private val radioConfigRepository = mock<RadioConfigRepository>(MockMode.autofill)
     private val serviceRepository = mock<ServiceRepository>(MockMode.autofill)
     private val nodeManager = mock<NodeManager>(MockMode.autofill)
@@ -66,6 +73,8 @@ class MeshConfigHandlerImplTest {
     private val radioInterfaceService = mock<RadioInterfaceService>(MockMode.autofill)
 
     private val localConfigFlow = MutableStateFlow(LocalConfig.Builder().build())
+    private val channelSetFlow = MutableStateFlow(ChannelSet.Builder().build())
+    private val meshPrefs = FakeMeshPrefs()
     private val moduleConfigFlow = MutableStateFlow(LocalModuleConfig.Builder().build())
 
     private val testDispatcher = UnconfinedTestDispatcher()
@@ -76,6 +85,9 @@ class MeshConfigHandlerImplTest {
     @BeforeTest
     fun setUp() {
         every { radioConfigRepository.localConfigFlow } returns localConfigFlow
+        every { radioConfigRepository.channelSetFlow } returns channelSetFlow
+        every { nodeManager.myNodeNum } returns MutableStateFlow(MY_NODE_NUM)
+        meshPrefs.nodeSyncs[MY_NODE_NUM] = 1_800_000_000L
         every { radioConfigRepository.moduleConfigFlow } returns moduleConfigFlow
         every { radioInterfaceService.runIfSessionActive(session, any()) } calls
             {
@@ -99,6 +111,7 @@ class MeshConfigHandlerImplTest {
         nodeManager = nodeManager,
         connectionManager = lazy { this.connectionManager },
         radioInterfaceService = radioInterfaceService,
+        meshPrefs = meshPrefs,
         scope = scope.asServiceScope(),
     )
 
@@ -375,6 +388,59 @@ class MeshConfigHandlerImplTest {
         verifySuspend(mode = VerifyMode.exactly(1)) { radioConfigRepository.setLocalModuleConfig(config) }
         verifySuspend(mode = VerifyMode.exactly(1)) { nodeManager.updateNodeStatusAndPersist(myNum, "Active") }
         parentJob.cancel()
+    }
+
+    private fun loraConfig(channelNum: Int) = Config.Builder()
+        .also { wb ->
+            wb.lora =
+                Config.LoRaConfig.Builder()
+                    .also {
+                        it.use_preset = true
+                        it.modem_preset = Config.LoRaConfig.ModemPreset.LONG_FAST
+                        it.channel_num = channelNum
+                    }
+                    .build()
+        }
+        .build()
+
+    @Test
+    fun `handleDeviceConfig forgets the node sync when the LoRa slot moved since the last connection`() =
+        runTest(testDispatcher) {
+            handler = createHandler(backgroundScope)
+            localConfigFlow.value = LocalConfig.Builder().also { wb -> wb.lora = loraConfig(20).lora }.build()
+
+            handler.handleDeviceConfig(loraConfig(20), session)
+            advanceUntilIdle()
+            assertEquals(1_800_000_000L, meshPrefs.nodeSyncs[MY_NODE_NUM], "same slot keeps the sync")
+
+            handler.handleDeviceConfig(loraConfig(21), session)
+            advanceUntilIdle()
+            assertEquals(0L, meshPrefs.nodeSyncs[MY_NODE_NUM])
+        }
+
+    private fun primaryChannel(name: String) = Channel.Builder()
+        .also { wb ->
+            wb.index = 0
+            wb.role = Channel.Role.PRIMARY
+            wb.settings = ChannelSettings.Builder().also { it.name = name }.build()
+        }
+        .build()
+
+    @Test
+    fun `handleChannel forgets the node sync when the primary channel was renamed`() = runTest(testDispatcher) {
+        handler = createHandler(backgroundScope)
+        channelSetFlow.value =
+            ChannelSet.Builder()
+                .also { wb -> wb.settings = listOf(primaryChannel("MediumFast").settings!!) }
+                .build()
+
+        handler.handleChannel(primaryChannel("MediumFast"), session)
+        advanceUntilIdle()
+        assertEquals(1_800_000_000L, meshPrefs.nodeSyncs[MY_NODE_NUM], "same name keeps the sync")
+
+        handler.handleChannel(primaryChannel("LongFast"), session)
+        advanceUntilIdle()
+        assertEquals(0L, meshPrefs.nodeSyncs[MY_NODE_NUM])
     }
 
     // ---------- handleChannel ----------

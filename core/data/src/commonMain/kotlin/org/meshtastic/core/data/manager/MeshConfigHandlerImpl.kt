@@ -21,13 +21,16 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import org.koin.core.annotation.Single
 import org.meshtastic.core.common.di.ServiceScope
 import org.meshtastic.core.common.util.handledLaunch
+import org.meshtastic.core.model.heardSlot
 import org.meshtastic.core.repository.MeshConfigHandler
 import org.meshtastic.core.repository.MeshConnectionManager
+import org.meshtastic.core.repository.MeshPrefs
 import org.meshtastic.core.repository.NodeManager
 import org.meshtastic.core.repository.RadioConfigRepository
 import org.meshtastic.core.repository.RadioInterfaceService
@@ -48,6 +51,7 @@ class MeshConfigHandlerImpl(
     private val nodeManager: NodeManager,
     private val connectionManager: Lazy<MeshConnectionManager>,
     private val radioInterfaceService: RadioInterfaceService,
+    private val meshPrefs: MeshPrefs,
     private val scope: ServiceScope,
 ) : MeshConfigHandler {
 
@@ -80,6 +84,10 @@ class MeshConfigHandlerImpl(
             }
         if (admitted) {
             launchPersistenceForSession(session, "config ${config.summarize()} persist") {
+                config.lora?.let { lora ->
+                    val previous = radioConfigRepository.localConfigFlow.firstOrNull()?.lora
+                    if (previous != null && previous.heardSlot != lora.heardSlot) forgetNodeSync("LoRa slot")
+                }
                 radioConfigRepository.setLocalConfig(config)
             }
         }
@@ -133,6 +141,10 @@ class MeshConfigHandlerImpl(
         if (admitted) {
             // We always want to save channel settings we receive from the radio.
             launchPersistenceForSession(session, "channel persist") {
+                if (channel.role == Channel.Role.PRIMARY) {
+                    val previous = radioConfigRepository.channelSetFlow.firstOrNull()?.settings?.firstOrNull()?.name
+                    if (previous != null && previous != channel.settings?.name) forgetNodeSync("primary channel")
+                }
                 radioConfigRepository.updateChannelSettings(channel)
             }
         }
@@ -171,6 +183,16 @@ class MeshConfigHandlerImpl(
         }
         if (!admitted) Logger.d { "Discarding region presets from stale transport session" }
         return admitted
+    }
+
+    /**
+     * Nodes a trimmed node-list sync would skip keep their heard_on_current_lora flag from before the change, so the
+     * next sync must be a full one. Heals changes made by another client or on the radio between sessions.
+     */
+    private fun forgetNodeSync(what: String) {
+        val myNodeNum = nodeManager.myNodeNum.value ?: return
+        Logger.i { "$what changed since the last connection; next node sync asks for the full list" }
+        meshPrefs.setLastNodeSync(myNodeNum, 0L)
     }
 
     /**

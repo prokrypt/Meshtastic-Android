@@ -107,6 +107,10 @@ class MeshConfigFlowManagerImpl(
             val myNodeInfo: SharedMyNodeInfo,
             val nodes: List<NodeInfo> = emptyList(),
             val refresh: Boolean = false,
+            /**
+             * When the node list was requested; the next trimmed sync starts from here, so nodes heard mid-dump recur.
+             */
+            val requestedSeconds: Long = 0L,
         ) : HandshakeState()
 
         /** Both stages finished. The app is fully connected. */
@@ -223,6 +227,7 @@ class MeshConfigFlowManagerImpl(
                 session = state.session,
                 myNodeInfo = finalizedInfo,
                 nodes = state.earlyNodes,
+                requestedSeconds = nowSeconds,
             )
         Logger.i { "myNodeInfo committed" }
         connectionManager.value.onRadioConfigLoaded()
@@ -336,7 +341,7 @@ class MeshConfigFlowManagerImpl(
                 serviceStateWriter.setConnectionState(ConnectionState.Connected)
             }
         if (!published) return
-        meshPrefs.setLastNodeSync(info.myNodeNum, nowSeconds)
+        meshPrefs.setLastNodeSync(info.myNodeNum, state.requestedSeconds)
 
         safeCatching { analytics.setDeviceAttributes(info.firmwareVersion ?: "unknown", info.model ?: "unknown") }
             .onFailure { e -> Logger.w(e) { "Failed to set post-handshake analytics attributes" } }

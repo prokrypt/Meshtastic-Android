@@ -37,6 +37,7 @@ import org.meshtastic.core.database.entity.NodeEntity
 import org.meshtastic.core.database.getInMemoryDatabaseBuilder
 import org.meshtastic.core.di.CoroutineDispatchers
 import org.meshtastic.core.testing.FakeLocalStatsDataSource
+import org.meshtastic.core.testing.FakeMeshPrefs
 import org.meshtastic.proto.DeviceMetadata
 import org.meshtastic.proto.User
 import kotlin.test.AfterTest
@@ -78,6 +79,7 @@ class NodeDeletionDatabaseSwitchTest {
                 nodeInfoWriteDataSource = writeDataSourceWithoutStartupBackfill,
                 dispatchers = dispatchers,
                 localStatsDataSource = FakeLocalStatsDataSource(),
+                meshPrefs = FakeMeshPrefs(),
             )
         provider.arm()
     }

@@ -87,11 +87,20 @@ class MeshPrefsImpl(private val dataStore: MeshDataStore, dispatchers: Coroutine
         scope.launch { dataStore.edit { prefs -> prefs[nodeSyncKey(nodeNum)] = epochSeconds } }
     }
 
-    private fun nodeSyncKey(nodeNum: Int) = longPreferencesKey("node-sync-${nodeNum.toUInt()}")
+    override fun clearNodeSyncs() {
+        scope.launch {
+            dataStore.edit { prefs ->
+                prefs.asMap().keys.filter { it.name.startsWith(NODE_SYNC_PREFIX) }.forEach { prefs -= it }
+            }
+        }
+    }
+
+    private fun nodeSyncKey(nodeNum: Int) = longPreferencesKey("$NODE_SYNC_PREFIX${nodeNum.toUInt()}")
 
     private fun storeForwardKey(address: String?): String = "store-forward-last-request-${normalizeAddress(address)}"
 
     companion object {
+        private const val NODE_SYNC_PREFIX = "node-sync-"
         val KEY_DEVICE_ADDRESS_PREF = stringPreferencesKey("device_address")
     }
 }

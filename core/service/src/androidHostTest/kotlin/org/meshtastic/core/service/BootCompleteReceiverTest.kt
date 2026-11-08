@@ -269,6 +269,8 @@ class BootCompleteReceiverTest {
         override suspend fun lastNodeSync(nodeNum: Int): Long = 0L
 
         override fun setLastNodeSync(nodeNum: Int, epochSeconds: Long) = Unit
+
+        override fun clearNodeSyncs() = Unit
     }
 
     private class StallingDispatcher : CoroutineDispatcher() {

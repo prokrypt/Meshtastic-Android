@@ -378,6 +378,8 @@ class FakeMeshPrefs : MeshPrefs {
     override fun setLastNodeSync(nodeNum: Int, epochSeconds: Long) {
         nodeSyncs[nodeNum] = epochSeconds
     }
+
+    override fun clearNodeSyncs() = nodeSyncs.clear()
 }
 
 class FakeAppFunctionsPrefs : AppFunctionsPrefs {

@@ -414,6 +414,9 @@ interface MeshPrefs {
     suspend fun lastNodeSync(nodeNum: Int): Long
 
     fun setLastNodeSync(nodeNum: Int, epochSeconds: Long)
+
+    /** Forgets every node-list sync, so the next connection asks each radio for its full list. */
+    fun clearNodeSyncs()
 }
 
 /** Reactive interface for TAK server settings. */

@@ -16,6 +16,7 @@
  */
 package org.meshtastic.core.ble
 
+import android.bluetooth.le.ScanSettings
 import co.touchlab.kermit.Logger
 import com.juul.kable.AndroidPeripheral
 import com.juul.kable.Peripheral
@@ -27,9 +28,14 @@ import kotlinx.coroutines.CancellationException
 import org.meshtastic.core.model.util.anonymize
 
 // The scan callback never blocks; a capacity of 1 conflates, so a dense BLE environment cannot back
-// advertisements up behind a slow collector.
-internal actual fun ScannerBuilder.platformScanConfig() {
+// advertisements up behind a slow collector. LOW_POWER (Android's default) listens ~0.5 s of every 5 s, so a short
+// connect scan can miss a radio advertising every ~400 ms; targeted connect scans ask for LOW_LATENCY instead.
+internal actual fun ScannerBuilder.platformScanConfig(lowLatency: Boolean) {
     bufferCapacity = 1
+    scanSettings =
+        ScanSettings.Builder()
+            .setScanMode(if (lowLatency) ScanSettings.SCAN_MODE_LOW_LATENCY else ScanSettings.SCAN_MODE_LOW_POWER)
+            .build()
 }
 
 /** Android's scanner filters on address in hardware, so Kable's `Filter.Address` works natively here. */

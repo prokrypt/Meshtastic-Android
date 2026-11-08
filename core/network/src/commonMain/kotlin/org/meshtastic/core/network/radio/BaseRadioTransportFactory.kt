@@ -18,8 +18,10 @@ package org.meshtastic.core.network.radio
 
 import co.touchlab.kermit.Logger
 import org.meshtastic.core.ble.BleConnectionFactory
+import org.meshtastic.core.ble.BleLinkReleaseClock
 import org.meshtastic.core.ble.BleScanner
 import org.meshtastic.core.ble.BluetoothRepository
+import org.meshtastic.core.common.util.nowMillis
 import org.meshtastic.core.di.CoroutineDispatchers
 import org.meshtastic.core.model.InterfaceId
 import org.meshtastic.core.repository.RadioInterfaceService
@@ -84,6 +86,7 @@ abstract class BaseRadioTransportFactory(
                         connectionFactory = connectionFactory,
                         callback = service,
                         address = bleAddress,
+                        initialSettleDelay = remainingSettleDelay(BleLinkReleaseClock.lastReleaseMillis, nowMillis),
                     )
                 }
 

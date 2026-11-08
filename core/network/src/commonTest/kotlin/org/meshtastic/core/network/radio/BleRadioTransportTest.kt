@@ -1136,12 +1136,13 @@ private class ControllableBleScanner : BleScanner {
     var scanCalls: Int = 0
         private set
 
-    override fun scan(timeout: Duration, serviceUuid: Uuid?, address: String?): Flow<BleDevice> = flow {
-        scanCalls++
-        advertisedDevice?.let {
-            emit(it)
-            return@flow
+    override fun scan(timeout: Duration, serviceUuid: Uuid?, address: String?, lowLatency: Boolean): Flow<BleDevice> =
+        flow {
+            scanCalls++
+            advertisedDevice?.let {
+                emit(it)
+                return@flow
+            }
+            awaitCancellation()
         }
-        awaitCancellation()
-    }
 }

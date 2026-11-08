@@ -64,6 +64,7 @@ import org.meshtastic.core.repository.RadioInterfaceService
 import org.meshtastic.core.repository.RadioTransport
 import org.meshtastic.core.repository.RadioTransportCallback
 import kotlin.concurrent.Volatile
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
@@ -142,6 +143,7 @@ private val POST_INVALIDATION_RECONNECT_DELAY = BleReconnectPolicy.DEFAULT_SETTL
  * @param connectionFactory The BLE connection factory.
  * @param callback The [RadioTransportCallback] to use for handling radio events.
  * @param address The BLE address of the device to connect to.
+ * @param initialSettleDelay settle before the first attempt; later attempts use the policy default
  */
 class BleRadioTransport(
     private val scope: CoroutineScope,
@@ -150,6 +152,7 @@ class BleRadioTransport(
     private val connectionFactory: BleConnectionFactory,
     private val callback: RadioTransportCallback,
     internal val address: String,
+    initialSettleDelay: Duration = BleReconnectPolicy.DEFAULT_SETTLE_DELAY,
 ) : RadioTransport {
 
     // Detached cleanup scope for last-ditch GATT teardown from the exception handler.
@@ -228,7 +231,8 @@ class BleRadioTransport(
     // Never give up while the user has this device selected. Higher layers (SharedRadioInterfaceService)
     // own the explicit-disconnect lifecycle and will close() us when the user picks a different device or
     // toggles the connection off; until then, retry forever with the policy's exponential-backoff cap (60 s).
-    private val reconnectPolicy = BleReconnectPolicy(maxFailures = Int.MAX_VALUE)
+    private val reconnectPolicy =
+        BleReconnectPolicy(maxFailures = Int.MAX_VALUE, initialSettleDelay = initialSettleDelay)
 
     // Because the loop above never gives up, a stale platform GATT cache would otherwise retry forever without
     // recovering (issue #6685). This gate decides when a long failure streak has earned one cache refresh.
@@ -350,7 +354,10 @@ class BleRadioTransport(
                 null
             }
 
-        val device = probedDevice ?: deviceLocator.findDevice()
+        // Fast scan while the radio is probably nearby; once a streak starts, stay on the low-power scan.
+        val device =
+            probedDevice
+                ?: deviceLocator.findDevice(lowLatency = consecutiveFailures < scanOnlyProbeGate.failureThreshold)
 
         bondDeviceBeforeConnect(device)
 
@@ -723,10 +730,9 @@ class BleRadioTransport(
      * priority after [PRIORITY_DOWNGRADE_DELAY] to conserve battery.
      */
     private suspend fun CoroutineScope.requestHighPriorityAndScheduleDowngrade() {
+        // No wait for the parameter update: GATT traffic keeps flowing while the link switches intervals.
         if (bleConnection.requestHighConnectionPriority()) {
             Logger.d { "[${address.anonymize()}] Requested high BLE connection priority" }
-            // Wait for the connection parameter update before starting heavy traffic.
-            delay(1.seconds)
         }
         launch {
             delay(PRIORITY_DOWNGRADE_DELAY)

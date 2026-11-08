@@ -62,7 +62,7 @@ internal class BleDeviceLocator(
 ) {
     /** Robustly finds the device. Checks bonded devices, preferring a fresh scan result when available. */
     @Suppress("ReturnCount")
-    internal suspend fun findDevice(): BleDevice {
+    internal suspend fun findDevice(lowLatency: Boolean = false): BleDevice {
         val bondedDevice =
             bluetoothRepository.state.value.bondedDevices.firstOrNull { it.address.equals(address, ignoreCase = true) }
 
@@ -71,7 +71,7 @@ internal class BleDeviceLocator(
             // two Android scanner registrations per reconnect and could hit SCAN_FAILED_SCANNING_TOO_FREQUENTLY when a
             // user switched devices while the reconnect policy and the Connections screen were also scanning.
             Logger.i { "[${address.anonymize()}] Bonded device found; scanning once for a fresh advertisement" }
-            scanForFreshDevice(SCAN_TIMEOUT)?.let {
+            scanForFreshDevice(SCAN_TIMEOUT, lowLatency)?.let {
                 Logger.i { "[${address.anonymize()}] Fresh advertisement found; using scanned device" }
                 return it
             }
@@ -90,7 +90,7 @@ internal class BleDeviceLocator(
         // Non-bonded path: preserve existing retry behavior (SCAN_RETRY_COUNT attempts at SCAN_TIMEOUT).
         Logger.i { "[${address.anonymize()}] Device not found in bonded list, scanning" }
         repeat(SCAN_RETRY_COUNT) { attempt ->
-            scanForFreshDevice(SCAN_TIMEOUT)?.let {
+            scanForFreshDevice(SCAN_TIMEOUT, lowLatency)?.let {
                 return it
             }
             if (attempt < SCAN_RETRY_COUNT - 1) {
@@ -114,13 +114,15 @@ internal class BleDeviceLocator(
      *
      * [CancellationException] is rethrown — coroutine cancellation must never be swallowed.
      */
-    internal suspend fun scanForFreshDevice(timeout: Duration): BleDevice? = try {
+    internal suspend fun scanForFreshDevice(timeout: Duration, lowLatency: Boolean = false): BleDevice? = try {
         withTimeoutOrNull(timeout) {
             // Pass both service UUID and address; the scanner picks whichever filter the platform can honour
             // (address natively on Android, service UUID elsewhere) and narrows to the address itself.
-            scanner.scan(timeout = timeout, serviceUuid = SERVICE_UUID, address = address).first {
-                it.address.equals(address, ignoreCase = true)
-            }
+            scanner
+                .scan(timeout = timeout, serviceUuid = SERVICE_UUID, address = address, lowLatency = lowLatency)
+                .first {
+                    it.address.equals(address, ignoreCase = true)
+                }
         }
     } catch (e: CancellationException) {
         throw e

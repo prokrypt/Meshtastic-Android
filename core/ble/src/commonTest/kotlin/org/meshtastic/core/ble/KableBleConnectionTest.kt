@@ -282,7 +282,7 @@ class KableBleConnectionTest {
 
         override suspend fun reserveScanStart() = scanStartLimiter.reserveStart()
 
-        override fun advertisements(filter: KableScanFilter): Flow<KableScanResult> {
+        override fun advertisements(filter: KableScanFilter, lowLatency: Boolean): Flow<KableScanResult> {
             lastFilter = filter
             return scanResults
         }

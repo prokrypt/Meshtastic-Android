@@ -1350,7 +1350,12 @@ private class SequencedBleScanner : BleScanner {
      */
     val responses = mutableListOf<() -> Flow<BleDevice>>()
 
-    override fun scan(timeout: Duration, serviceUuid: kotlin.uuid.Uuid?, address: String?): Flow<BleDevice> {
+    override fun scan(
+        timeout: Duration,
+        serviceUuid: kotlin.uuid.Uuid?,
+        address: String?,
+        lowLatency: Boolean,
+    ): Flow<BleDevice> {
         val index = _calls.size
         _calls += Call(timeout, serviceUuid, address)
         return if (index < responses.size) responses[index]() else flow { awaitCancellation() }

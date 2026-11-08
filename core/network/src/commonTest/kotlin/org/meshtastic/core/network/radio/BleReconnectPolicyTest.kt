@@ -307,18 +307,17 @@ class BleReconnectPolicyTest {
         val policy =
             BleReconnectPolicy(maxFailures = 100, settleDelay = 1.milliseconds, backoffStrategy = { 1.milliseconds })
 
-        val job =
-            backgroundScope.launch {
-                policy.execute(
-                    attempt = {
-                        attemptCount++
-                        // Always succeed stably — loop should run until cancelled
-                        BleReconnectPolicy.Outcome.Disconnected(wasStable = true, wasIntentional = false)
-                    },
-                    onTransientDisconnect = {},
-                    onPermanentDisconnect = {},
-                )
-            }
+        val job = backgroundScope.launch {
+            policy.execute(
+                attempt = {
+                    attemptCount++
+                    // Always succeed stably — loop should run until cancelled
+                    BleReconnectPolicy.Outcome.Disconnected(wasStable = true, wasIntentional = false)
+                },
+                onTransientDisconnect = {},
+                onPermanentDisconnect = {},
+            )
+        }
 
         // Let a few iterations run, then cancel
         advanceTimeBy(50)
@@ -328,6 +327,38 @@ class BleReconnectPolicyTest {
         // Should have made some attempts but not reached maxFailures
         assertTrue(attemptCount > 0, "should have attempted at least once")
         assertTrue(attemptCount < 100, "should not have exhausted all failures — was cancelled")
+    }
+
+    @Test
+    fun `execute uses initialSettleDelay for the first attempt only`() = runTest {
+        val attemptTimes = mutableListOf<Long>()
+        val policy =
+            BleReconnectPolicy(
+                maxFailures = 3,
+                settleDelay = 3.seconds,
+                initialSettleDelay = 0.seconds,
+                backoffStrategy = { 5.seconds },
+            )
+
+        policy.execute(
+            attempt = {
+                attemptTimes += testScheduler.currentTime
+                BleReconnectPolicy.Outcome.Failed(RuntimeException("connection failed"))
+            },
+            onTransientDisconnect = {},
+            onPermanentDisconnect = {},
+        )
+
+        assertEquals(listOf(0L, 8_000L, 16_000L), attemptTimes)
+    }
+
+    @Test
+    fun `remainingSettleDelay owes only what is left since the last release`() {
+        assertEquals(0.seconds, remainingSettleDelay(lastReleaseMillis = 0L, nowMillis = 10_000L))
+        assertEquals(2.seconds, remainingSettleDelay(lastReleaseMillis = 9_000L, nowMillis = 10_000L))
+        assertEquals(0.seconds, remainingSettleDelay(lastReleaseMillis = 1_000L, nowMillis = 10_000L))
+        // A clock that stepped backwards must not shorten nor exceed the settle.
+        assertEquals(3.seconds, remainingSettleDelay(lastReleaseMillis = 20_000L, nowMillis = 10_000L))
     }
 
     // endregion

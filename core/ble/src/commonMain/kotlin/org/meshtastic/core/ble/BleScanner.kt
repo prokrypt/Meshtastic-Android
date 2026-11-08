@@ -25,7 +25,13 @@ interface BleScanner {
      * Scans for BLE devices.
      *
      * @param timeout The duration of the scan.
+     * @param lowLatency scan at full duty cycle where the platform supports it; meant for short, targeted scans
      * @return A [Flow] of discovered [BleDevice]s.
      */
-    fun scan(timeout: Duration, serviceUuid: kotlin.uuid.Uuid? = null, address: String? = null): Flow<BleDevice>
+    fun scan(
+        timeout: Duration,
+        serviceUuid: kotlin.uuid.Uuid? = null,
+        address: String? = null,
+        lowLatency: Boolean = false,
+    ): Flow<BleDevice>
 }

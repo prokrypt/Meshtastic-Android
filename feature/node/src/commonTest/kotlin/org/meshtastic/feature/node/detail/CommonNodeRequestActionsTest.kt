@@ -30,6 +30,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import org.meshtastic.core.model.TelemetryType
 import org.meshtastic.core.repository.LocalNodeUnavailableException
 import org.meshtastic.core.repository.PacketQueueRejectedException
 import org.meshtastic.core.repository.PlatformAnalytics
@@ -83,6 +84,7 @@ class CommonNodeRequestActionsTest {
     fun `neighbor queue rejection is surfaced without starting the request timer`() = runTest {
         val rejection = PacketQueueRejectedException("Neighbor info request")
         every { radioController.generatePacketId() } returns 43
+        everySuspend { radioController.sendSharedContact(1234) } returns true
         everySuspend { radioController.requestNeighborInfo(43, 1234) } throws rejection
 
         actions.requestNeighborInfo(destNum = 1234, longName = "Test Node")
@@ -98,6 +100,29 @@ class CommonNodeRequestActionsTest {
         nakWatcher = testNakWatcher(radioController),
         resolveUiText = { "feedback" },
     )
+
+    @Test
+    fun `telemetry request shares the destination key before sending`() = runTest {
+        val calls = mutableListOf<String>()
+        every { radioController.generatePacketId() } returns 44
+        everySuspend { radioController.sendSharedContact(1234) } calls { true.also { calls += "contact" } }
+        everySuspend { radioController.requestTelemetry(44, 1234, any()) } calls { calls += "telemetry" }
+
+        sendingActions().requestTelemetry(destNum = 1234, longName = "Test Node", type = TelemetryType.DEVICE)
+
+        assertEquals(listOf("contact", "telemetry"), calls)
+    }
+
+    @Test
+    fun `telemetry request still goes out when no key is on file`() = runTest {
+        every { radioController.generatePacketId() } returns 45
+        everySuspend { radioController.sendSharedContact(1234) } returns false
+        everySuspend { radioController.requestTelemetry(any(), any(), any()) } returns Unit
+
+        sendingActions().requestTelemetry(destNum = 1234, longName = "Test Node", type = TelemetryType.DEVICE)
+
+        verifySuspend(exactly(1)) { radioController.requestTelemetry(45, 1234, TelemetryType.DEVICE.ordinal) }
+    }
 
     @Test
     fun `traceroute request stamps the shared cooldown`() = runTest {

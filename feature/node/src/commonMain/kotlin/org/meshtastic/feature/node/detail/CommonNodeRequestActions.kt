@@ -88,8 +88,18 @@ constructor(
         showFeedback(UiText.Resource(Res.string.requesting_from, Res.string.user_info, longName))
     }
 
+    /**
+     * Telemetry and neighbor-info requests go out PKC-encrypted, and the radio refuses them with
+     * PKI_SEND_FAIL_PUBLIC_KEY when its small NodeDB has evicted the target's key. Push the key the app holds first, as
+     * a direct message does; the radio keeps it in RAM, which also lets it decrypt the reply.
+     */
+    private suspend fun shareDestinationKey(destNum: Int) {
+        if (!radioController.sendSharedContact(destNum)) Logger.d { "No key shared for '$destNum'" }
+    }
+
     override suspend fun requestNeighborInfo(destNum: Int, longName: String) = runRequest {
         Logger.i { "Requesting NeighborInfo for '$destNum'" }
+        shareDestinationKey(destNum)
         nakWatcher.watch(Res.string.neighbor_info, longName) { id -> radioController.requestNeighborInfo(id, destNum) }
         _lastRequestNeighborTimes.update { it + (destNum to nowMillis) }
         showFeedback(UiText.Resource(Res.string.requesting_from, Res.string.neighbor_info, longName))
@@ -114,6 +124,7 @@ constructor(
                 TelemetryType.HOST -> Res.string.request_host_metrics
                 TelemetryType.PAX -> Res.string.request_pax_metrics
             }
+        shareDestinationKey(destNum)
         nakWatcher.watch(typeRes, longName) { id -> radioController.requestTelemetry(id, destNum, type.ordinal) }
         analytics.trackAction("telemetry_request", mapOf("telemetry_type" to type.name))
 

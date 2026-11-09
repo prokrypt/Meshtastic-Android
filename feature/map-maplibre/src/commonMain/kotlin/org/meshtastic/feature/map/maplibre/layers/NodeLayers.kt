@@ -73,10 +73,10 @@ private const val CLUSTER_RADIUS = 50
 private const val CLUSTER_MAX_ZOOM = 20
 
 /**
- * Matches the Google flavor's `MIN_CLUSTER_SIZE`: fewer than this many together are drawn as themselves rather than
- * collapsed into a bubble. Two nearby nodes turning into a cluster hides more than it explains.
+ * Matches the Google flavor's `MIN_CLUSTER_SIZE`: any two nodes within [CLUSTER_RADIUS] screen pixels of each other
+ * collapse into a bubble, so chips never pile up and every one on screen stays tappable at any zoom.
  */
-private const val CLUSTER_MIN_POINTS = 10
+private const val CLUSTER_MIN_POINTS = 2
 
 /**
  * The mesh node layers: ground-truth precision circles underneath, then clusters, then individual node chips.

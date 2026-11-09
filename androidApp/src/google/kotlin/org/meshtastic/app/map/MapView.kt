@@ -136,6 +136,7 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import org.jetbrains.compose.resources.stringResource
 import org.koin.compose.viewmodel.koinViewModel
+import org.meshtastic.app.map.component.CLUSTER_MAX_DISTANCE_DP
 import org.meshtastic.app.map.component.CustomTileProviderManagerSheet
 import org.meshtastic.app.map.component.MapTypeDropdown
 import org.meshtastic.app.map.component.NodeClusterMarkers
@@ -247,10 +248,15 @@ import java.io.BufferedInputStream
 import java.io.ByteArrayInputStream
 import java.io.InputStream
 import kotlin.coroutines.resume
+import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.cos
+import kotlin.math.floor
+import kotlin.math.ln
+import kotlin.math.log2
 import kotlin.math.max
 import kotlin.math.roundToInt
+import kotlin.math.tan
 import android.graphics.Color as AndroidColor
 import com.google.android.gms.maps.GoogleMap as GmsGoogleMap
 import com.google.maps.android.data.renderer.model.Polygon as ModelPolygon
@@ -355,6 +361,26 @@ private fun LatLngBounds.atLeastSpan(meters: Double): LatLngBounds {
 }
 
 private const val MIN_COS_LATITUDE = 0.01
+
+// Google's deepest zoom for its roadmap and satellite tiles in most places.
+private const val MAX_CLUSTER_SPLIT_ZOOM = 21
+private const val TILE_SIZE_DP = 256.0
+
+/**
+ * The first whole zoom at which the clustering algorithm no longer fits all of [positions] in one bubble, or null when
+ * no zoom up to [MAX_CLUSTER_SPLIT_ZOOM] does (such as nodes at one spot), so the cluster is listed instead.
+ *
+ * The algorithm floors the zoom and gathers items within [CLUSTER_MAX_DISTANCE_DP] / 2 of an anchor on both axes, so
+ * once the members span more than [CLUSTER_MAX_DISTANCE_DP] on either axis they cannot all share one bubble.
+ */
+internal fun clusterSplitZoom(positions: List<LatLng>): Int? {
+    if (positions.size < 2) return null
+    val xs = positions.map { it.longitude / 360.0 }
+    val ys = positions.map { ln(tan(PI / 4 + Math.toRadians(it.latitude) / 2)) / (2 * PI) }
+    val span = maxOf(xs.max() - xs.min(), ys.max() - ys.min()) * TILE_SIZE_DP
+    val zoom = if (span > 0.0) floor(log2(CLUSTER_MAX_DISTANCE_DP / span)).toInt() + 1 else Int.MAX_VALUE
+    return zoom.coerceAtLeast(0).takeIf { it <= MAX_CLUSTER_SPLIT_ZOOM }
+}
 
 /** Below the offline vector layer's own water/roads/boundaries (-0.75f) so those still draw on top of the shading. */
 private const val TERRAIN_HILLSHADE_Z_INDEX = -0.9f
@@ -1405,8 +1431,8 @@ private fun MainMapContent(
         onStackClick = { onShowClusterItemsDialog(it) },
         onClusterClick = { cluster ->
             val items = cluster.items.toList()
-            val allSameLocation = items.size > 1 && items.all { it.position == items.first().position }
-            if (allSameLocation) {
+            val splitZoom = clusterSplitZoom(items.map { it.position })
+            if (splitZoom == null) {
                 onShowClusterItemsDialog(items)
             } else {
                 val bounds = LatLngBounds.builder()
@@ -1415,8 +1441,15 @@ private fun MainMapContent(
                 // needing several taps to break.
                 val fitted = bounds.build().atLeastSpan(CLUSTER_FIT_MIN_SPAN_METERS)
                 coroutineScope.launch {
-                    cameraPositionState.animateOrLog("fitting cluster") {
-                        CameraUpdateFactory.newLatLngBounds(fitted, clusterFitPaddingPx)
+                    val fittedOk =
+                        cameraPositionState.animateOrLog("fitting cluster") {
+                            CameraUpdateFactory.newLatLngBounds(fitted, clusterFitPaddingPx)
+                        }
+                    // A tight cluster still overlaps at the fitted zoom; go in until it actually splits.
+                    if (fittedOk && cameraPositionState.position.zoom < splitZoom) {
+                        cameraPositionState.animateOrLog("splitting cluster") {
+                            CameraUpdateFactory.zoomTo(splitZoom.toFloat())
+                        }
                     }
                 }
                 Logger.d { "Cluster clicked! $cluster" }

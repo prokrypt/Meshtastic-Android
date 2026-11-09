@@ -138,6 +138,7 @@ import org.jetbrains.compose.resources.stringResource
 import org.koin.compose.viewmodel.koinViewModel
 import org.meshtastic.app.map.component.CLUSTER_MAX_DISTANCE_DP
 import org.meshtastic.app.map.component.CustomTileProviderManagerSheet
+import org.meshtastic.app.map.component.MIN_CLUSTER_SIZE
 import org.meshtastic.app.map.component.MapTypeDropdown
 import org.meshtastic.app.map.component.NodeClusterMarkers
 import org.meshtastic.app.map.component.WaypointMarkers
@@ -1415,10 +1416,15 @@ internal fun rememberNodeClusterItems(
                 myNodeNum = myNodeNum,
             )
         }
-        stackCoincident(nodes, myNodeNum, spreadMeters).map { stack ->
-            val members = if (stack.count > 1) stack.members.map(::itemFor) else emptyList()
-            itemFor(stack.top).copy(stackMembers = members)
-        }
+        stackCoincident(nodes, myNodeNum, spreadMeters)
+            .flatMap { merged ->
+                // Bubbles win: a group big enough to bubble stays as its close stacks, for the clustering to gather.
+                if (merged.count >= MIN_CLUSTER_SIZE) stackCoincident(merged.members, myNodeNum) else listOf(merged)
+            }
+            .map { stack ->
+                val members = if (stack.count > 1) stack.members.map(::itemFor) else emptyList()
+                itemFor(stack.top).copy(stackMembers = members)
+            }
     }
 }
 

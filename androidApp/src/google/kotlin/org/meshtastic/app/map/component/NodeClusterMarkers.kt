@@ -41,7 +41,7 @@ import org.meshtastic.app.map.model.NodeClusterItem
 import org.meshtastic.feature.map.BaseMapViewModel
 import org.meshtastic.feature.map.stackBadgeLabel
 
-private const val MIN_CLUSTER_SIZE = 10
+const val MIN_CLUSTER_SIZE = 10
 
 /** The clustering algorithms' own default `maxDistanceBetweenClusteredItems`, in dp; about one chip's width. */
 const val CLUSTER_MAX_DISTANCE_DP = 100

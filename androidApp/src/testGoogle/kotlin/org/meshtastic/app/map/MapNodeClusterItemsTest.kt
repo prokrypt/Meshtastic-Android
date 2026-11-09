@@ -130,6 +130,30 @@ class MapNodeClusterItemsTest {
     }
 
     @Test
+    fun `nearby nodes merge into one chip unless there are enough for a bubble`() = runComposeUiTest {
+        var nodes by mutableStateOf(testNodes(count = 3))
+        var latestItems: List<NodeClusterItem> = emptyList()
+
+        setContent {
+            val items =
+                rememberNodeClusterItems(
+                    nodes = nodes,
+                    myNodeNum = null,
+                    relativeTimeBucket = FIXED_TIME_BUCKET,
+                    spreadMeters = 1_000.0,
+                )
+            SideEffect { latestItems = items }
+        }
+        waitForIdle()
+        assertEquals(listOf(3), latestItems.map { it.stackMembers.size })
+
+        runOnIdle { nodes = testNodes(count = 12) }
+        waitForIdle()
+        assertEquals(12, latestItems.size)
+        assertTrue(latestItems.all { it.stackMembers.isEmpty() })
+    }
+
+    @Test
     fun `relative time bucket advances at the next minute boundary`() = runTest {
         val startSeconds = FIXED_TIME_BUCKET * 60 + 30
         val observedBuckets = mutableListOf<Long>()

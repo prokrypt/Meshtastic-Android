@@ -41,11 +41,7 @@ import org.meshtastic.app.map.model.NodeClusterItem
 import org.meshtastic.feature.map.BaseMapViewModel
 import org.meshtastic.feature.map.stackBadgeLabel
 
-/**
- * Any two markers whose chips would overlap at the current zoom collapse into a bubble, so every chip on screen is one
- * you can tap. "Overlap" is the algorithm's screen-space distance ([CLUSTER_MAX_DISTANCE_DP]), so it follows the zoom.
- */
-private const val MIN_CLUSTER_SIZE = 2
+private const val MIN_CLUSTER_SIZE = 10
 
 /** The clustering algorithms' own default `maxDistanceBetweenClusteredItems`, in dp; about one chip's width. */
 const val CLUSTER_MAX_DISTANCE_DP = 100

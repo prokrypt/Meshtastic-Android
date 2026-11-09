@@ -204,6 +204,7 @@ import org.meshtastic.feature.coverage.rememberCoverageEstimate
 import org.meshtastic.feature.map.BaseMapViewModel.MapFilterState
 import org.meshtastic.feature.map.MapBounds
 import org.meshtastic.feature.map.MapNodePolicy
+import org.meshtastic.feature.map.STACK_SPREAD_METERS
 import org.meshtastic.feature.map.TRACK_FADE_LEVELS
 import org.meshtastic.feature.map.TRACK_STOP_RADIUS_METERS
 import org.meshtastic.feature.map.component.ClusterMemberEntry
@@ -362,23 +363,36 @@ private fun LatLngBounds.atLeastSpan(meters: Double): LatLngBounds {
 
 private const val MIN_COS_LATITUDE = 0.01
 
+/**
+ * Nodes closer than this on screen merge into one chip with a count badge, so every chip stays tappable. One chip's
+ * minimum width ([org.meshtastic.core.ui.component.NodeChip]).
+ */
+private const val MERGE_DISTANCE_DP = 64
+
+// Web Mercator ground meters per dp at zoom 0 on the equator, for Google's 256 dp tiles.
+private const val METERS_PER_DP_AT_ZOOM_0 = 156_543.033_92
+
+/** How far apart, on the ground, nodes may be and still merge at [zoom] around [latitude]. */
+internal fun mergeSpreadMeters(zoom: Int, latitude: Double): Double = max(
+    STACK_SPREAD_METERS,
+    MERGE_DISTANCE_DP * METERS_PER_DP_AT_ZOOM_0 * cos(Math.toRadians(latitude)) / (1 shl zoom),
+)
+
 // Google's deepest zoom for its roadmap and satellite tiles in most places.
 private const val MAX_CLUSTER_SPLIT_ZOOM = 21
 private const val TILE_SIZE_DP = 256.0
 
 /**
- * The first whole zoom at which the clustering algorithm no longer fits all of [positions] in one bubble, or null when
- * no zoom up to [MAX_CLUSTER_SPLIT_ZOOM] does (such as nodes at one spot), so the cluster is listed instead.
- *
- * The algorithm floors the zoom and gathers items within [CLUSTER_MAX_DISTANCE_DP] / 2 of an anchor on both axes, so
- * once the members span more than [CLUSTER_MAX_DISTANCE_DP] on either axis they cannot all share one bubble.
+ * The first whole zoom at which [positions] span more than [distanceDp] on either axis, so a grouping that gathers
+ * markers within [distanceDp] / 2 of an anchor can no longer hold them all; or null when no zoom up to
+ * [MAX_CLUSTER_SPLIT_ZOOM] does (such as nodes at one spot), so the group is listed instead.
  */
-internal fun clusterSplitZoom(positions: List<LatLng>): Int? {
+internal fun clusterSplitZoom(positions: List<LatLng>, distanceDp: Int): Int? {
     if (positions.size < 2) return null
     val xs = positions.map { it.longitude / 360.0 }
     val ys = positions.map { ln(tan(PI / 4 + Math.toRadians(it.latitude) / 2)) / (2 * PI) }
     val span = maxOf(xs.max() - xs.min(), ys.max() - ys.min()) * TILE_SIZE_DP
-    val zoom = if (span > 0.0) floor(log2(CLUSTER_MAX_DISTANCE_DP / span)).toInt() + 1 else Int.MAX_VALUE
+    val zoom = if (span > 0.0) floor(log2(distanceDp / span)).toInt() + 1 else Int.MAX_VALUE
     return zoom.coerceAtLeast(0).takeIf { it <= MAX_CLUSTER_SPLIT_ZOOM }
 }
 
@@ -572,6 +586,12 @@ fun MapView(
             nodes = if (mode is GoogleMapMode.Main) filteredNodes else emptyList(),
             myNodeNum = myNodeNum,
             relativeTimeBucket = relativeTimeBucket,
+            // Whole zoom levels and degrees, so a pinch or pan only regroups when the merge distance really changes.
+            spreadMeters =
+            mergeSpreadMeters(
+                zoom = cameraPositionState.position.zoom.toInt(),
+                latitude = cameraPositionState.position.target.latitude.roundToInt().toDouble(),
+            ),
         )
     val isConnected by mapViewModel.isConnected.collectAsStateWithLifecycle()
     val theme by mapViewModel.theme.collectAsStateWithLifecycle()
@@ -1380,10 +1400,11 @@ internal fun rememberNodeClusterItems(
     nodes: List<Node>,
     myNodeNum: Int?,
     relativeTimeBucket: Long,
+    spreadMeters: Double = STACK_SPREAD_METERS,
 ): List<NodeClusterItem> {
     val unknownText = stringResource(Res.string.unknown)
     val nowText = stringResource(Res.string.now)
-    return remember(nodes, myNodeNum, relativeTimeBucket, unknownText, nowText) {
+    return remember(nodes, myNodeNum, relativeTimeBucket, unknownText, nowText, spreadMeters) {
         fun itemFor(node: Node): NodeClusterItem {
             val latLng = LatLng((node.position.latitude_i ?: 0) * DEG_D, (node.position.longitude_i ?: 0) * DEG_D)
             return NodeClusterItem(
@@ -1394,7 +1415,7 @@ internal fun rememberNodeClusterItems(
                 myNodeNum = myNodeNum,
             )
         }
-        stackCoincident(nodes, myNodeNum).map { stack ->
+        stackCoincident(nodes, myNodeNum, spreadMeters).map { stack ->
             val members = if (stack.count > 1) stack.members.map(::itemFor) else emptyList()
             itemFor(stack.top).copy(stackMembers = members)
         }
@@ -1424,36 +1445,38 @@ private fun MainMapContent(
     onShowClusterItemsDialog: (List<NodeClusterItem>?) -> Unit,
 ) {
     val clusterFitPaddingPx = with(LocalDensity.current) { CLUSTER_FIT_PADDING.roundToPx() }
+
+    // Zoom in until the group breaks apart, or list it when no zoom would (nodes at one spot).
+    fun openGroup(items: List<NodeClusterItem>, splitDistanceDp: Int) {
+        val splitZoom = clusterSplitZoom(items.map { it.position }, splitDistanceDp)
+        if (splitZoom == null) {
+            onShowClusterItemsDialog(items)
+            return
+        }
+        val bounds = LatLngBounds.builder()
+        items.forEach { bounds.include(it.position) }
+        // Fit the members, as the Apple map does, rather than step one zoom level and leave a tight group needing
+        // several taps to break.
+        val fitted = bounds.build().atLeastSpan(CLUSTER_FIT_MIN_SPAN_METERS)
+        coroutineScope.launch {
+            val fittedOk =
+                cameraPositionState.animateOrLog("fitting group") {
+                    CameraUpdateFactory.newLatLngBounds(fitted, clusterFitPaddingPx)
+                }
+            // A tight group still overlaps at the fitted zoom; go in until it actually splits.
+            if (fittedOk && cameraPositionState.position.zoom < splitZoom) {
+                cameraPositionState.animateOrLog("splitting group") { CameraUpdateFactory.zoomTo(splitZoom.toFloat()) }
+            }
+        }
+    }
     NodeClusterMarkers(
         nodeClusterItems = nodeClusterItems,
         mapFilterState = mapFilterState,
         navigateToNodeDetails = navigateToNodeDetails,
-        onStackClick = { onShowClusterItemsDialog(it) },
+        // Members of a merged chip sit within its merge radius of the first one, so spanning twice that splits them.
+        onStackClick = { openGroup(it, 2 * MERGE_DISTANCE_DP) },
         onClusterClick = { cluster ->
-            val items = cluster.items.toList()
-            val splitZoom = clusterSplitZoom(items.map { it.position })
-            if (splitZoom == null) {
-                onShowClusterItemsDialog(items)
-            } else {
-                val bounds = LatLngBounds.builder()
-                cluster.items.forEach { bounds.include(it.position) }
-                // Fit the members, as the Apple map does, rather than step one zoom level and leave a tight cluster
-                // needing several taps to break.
-                val fitted = bounds.build().atLeastSpan(CLUSTER_FIT_MIN_SPAN_METERS)
-                coroutineScope.launch {
-                    val fittedOk =
-                        cameraPositionState.animateOrLog("fitting cluster") {
-                            CameraUpdateFactory.newLatLngBounds(fitted, clusterFitPaddingPx)
-                        }
-                    // A tight cluster still overlaps at the fitted zoom; go in until it actually splits.
-                    if (fittedOk && cameraPositionState.position.zoom < splitZoom) {
-                        cameraPositionState.animateOrLog("splitting cluster") {
-                            CameraUpdateFactory.zoomTo(splitZoom.toFloat())
-                        }
-                    }
-                }
-                Logger.d { "Cluster clicked! $cluster" }
-            }
+            openGroup(cluster.items.toList(), CLUSTER_MAX_DISTANCE_DP)
             true
         },
     )

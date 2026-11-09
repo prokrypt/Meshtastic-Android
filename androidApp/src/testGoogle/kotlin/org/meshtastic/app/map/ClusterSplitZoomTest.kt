@@ -1,0 +1,55 @@
+/*
+ * Copyright (c) 2026 Meshtastic LLC
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+package org.meshtastic.app.map
+
+import com.google.android.gms.maps.model.LatLng
+import org.junit.Test
+import org.meshtastic.app.map.component.CLUSTER_MAX_DISTANCE_DP
+import org.meshtastic.feature.map.STACK_SPREAD_METERS
+import kotlin.math.cos
+import kotlin.test.assertEquals
+import kotlin.test.assertNull
+
+class ClusterSplitZoomTest {
+
+    private fun eastOf(origin: LatLng, meters: Double) =
+        LatLng(origin.latitude, origin.longitude + meters / (111_320.0 * cos(Math.toRadians(origin.latitude))))
+
+    private val oakland = LatLng(37.8, -122.2)
+
+    @Test
+    fun `nodes at one spot never split`() {
+        assertNull(clusterSplitZoom(listOf(oakland, oakland), CLUSTER_MAX_DISTANCE_DP))
+    }
+
+    @Test
+    fun `nodes a few meters apart are listed rather than zoomed past the deepest zoom`() {
+        assertNull(clusterSplitZoom(listOf(oakland, eastOf(oakland, 4.0)), CLUSTER_MAX_DISTANCE_DP))
+    }
+
+    @Test
+    fun `nearby nodes split at street zoom`() {
+        assertEquals(21, clusterSplitZoom(listOf(oakland, eastOf(oakland, 10.0)), CLUSTER_MAX_DISTANCE_DP))
+        assertEquals(14, clusterSplitZoom(listOf(oakland, eastOf(oakland, 1_000.0)), CLUSTER_MAX_DISTANCE_DP))
+    }
+
+    @Test
+    fun `merge distance follows zoom but never drops below the stack spread`() {
+        assertEquals(64 * 156_543.033_92 / 32_768, mergeSpreadMeters(zoom = 15, latitude = 0.0), 1e-6)
+        assertEquals(STACK_SPREAD_METERS, mergeSpreadMeters(zoom = 21, latitude = 37.8))
+    }
+}

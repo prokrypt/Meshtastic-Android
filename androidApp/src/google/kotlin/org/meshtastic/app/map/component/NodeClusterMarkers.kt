@@ -43,6 +43,9 @@ import org.meshtastic.feature.map.stackBadgeLabel
 
 private const val MIN_CLUSTER_SIZE = 10
 
+/** The clustering algorithms' own default `maxDistanceBetweenClusteredItems`, in dp; about one chip's width. */
+const val CLUSTER_MAX_DISTANCE_DP = 100
+
 // Matches the MapLibre map's precision fill, so both maps shade a degraded position alike.
 private const val PRECISION_FILL_ALPHA = 0.15f
 

@@ -20,6 +20,7 @@ import co.touchlab.kermit.Logger
 import kotlinx.atomicfu.atomic
 import kotlinx.atomicfu.update
 import kotlinx.collections.immutable.persistentListOf
+import kotlinx.collections.immutable.toPersistentList
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.combine
@@ -443,12 +444,23 @@ class MeshMessageProcessorImpl(
         held
             .groupBy { it.session }
             .forEach { (session, logs) ->
-                val admitted =
-                    radioInterfaceService.runWithSessionLease(session) {
-                        meshLogRepository.value.insertAll(logs.map { row -> row.log })
+                var saved = false
+                try {
+                    val admitted =
+                        radioInterfaceService.runWithSessionLease(session) {
+                            meshLogRepository.value.insertAll(logs.map { row -> row.log })
+                        }
+                    saved = true
+                    if (!admitted) {
+                        Logger.w { "Dropped ${logs.size} held mesh log rows: their radio session ended first" }
                     }
-                if (!admitted) {
-                    Logger.w { "Dropped ${logs.size} held mesh log rows: their radio session ended first" }
+                } finally {
+                    // Failed or cut short (a session-ending save that timed out): keep them held for the next save,
+                    // as held node writes are. A row that did land fails its retry on the uuid key and is skipped.
+                    if (!saved) {
+                        heldLogs.update { held -> logs.toPersistentList().addingAll(held) }
+                        logsHeldSinceMs.compareAndSet(Long.MIN_VALUE, nowMillis)
+                    }
                 }
             }
     }

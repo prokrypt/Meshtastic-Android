@@ -37,6 +37,7 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.meshtastic.core.common.di.asServiceScope
 import org.meshtastic.core.model.MyNodeInfo
+import org.meshtastic.core.model.heardSlot
 import org.meshtastic.core.repository.MeshConnectionManager
 import org.meshtastic.core.repository.NodeManager
 import org.meshtastic.core.repository.RadioConfigRepository
@@ -64,6 +65,7 @@ class MeshConfigHandlerImplTest {
 
     private companion object {
         const val MY_NODE_NUM = 0x1234
+        const val OTHER_NODE_NUM = 0x5678
     }
 
     private val radioConfigRepository = mock<RadioConfigRepository>(MockMode.autofill)
@@ -404,18 +406,26 @@ class MeshConfigHandlerImplTest {
         .build()
 
     @Test
-    fun `handleDeviceConfig forgets the node sync when the LoRa slot moved since the last connection`() =
+    fun `handleDeviceConfig forgets the node sync when this radio's LoRa slot moved since the last connection`() =
         runTest(testDispatcher) {
             handler = createHandler(backgroundScope)
-            localConfigFlow.value = LocalConfig.Builder().also { wb -> wb.lora = loraConfig(20).lora }.build()
+            // The stored config is cleared at every handshake, so the comparison must not depend on it.
+            localConfigFlow.value = LocalConfig.Builder().build()
+
+            handler.handleDeviceConfig(loraConfig(20), session)
+            advanceUntilIdle()
+            assertEquals(1_800_000_000L, meshPrefs.nodeSyncs[MY_NODE_NUM], "first slot seen keeps the sync")
 
             handler.handleDeviceConfig(loraConfig(20), session)
             advanceUntilIdle()
             assertEquals(1_800_000_000L, meshPrefs.nodeSyncs[MY_NODE_NUM], "same slot keeps the sync")
 
+            meshPrefs.nodeSyncs[OTHER_NODE_NUM] = 1_800_000_000L
+            meshPrefs.nodeSyncConfigs[OTHER_NODE_NUM to "slot"] = loraConfig(21).lora!!.heardSlot.joinToString()
             handler.handleDeviceConfig(loraConfig(21), session)
             advanceUntilIdle()
             assertEquals(0L, meshPrefs.nodeSyncs[MY_NODE_NUM])
+            assertEquals(1_800_000_000L, meshPrefs.nodeSyncs[OTHER_NODE_NUM], "another radio's record is its own")
         }
 
     private fun primaryChannel(name: String) = Channel.Builder()
@@ -427,21 +437,20 @@ class MeshConfigHandlerImplTest {
         .build()
 
     @Test
-    fun `handleChannel forgets the node sync when the primary channel was renamed`() = runTest(testDispatcher) {
-        handler = createHandler(backgroundScope)
-        channelSetFlow.value =
-            ChannelSet.Builder()
-                .also { wb -> wb.settings = listOf(primaryChannel("MediumFast").settings!!) }
-                .build()
+    fun `handleChannel forgets the node sync when this radio's primary channel was renamed`() =
+        runTest(testDispatcher) {
+            handler = createHandler(backgroundScope)
+            channelSetFlow.value = ChannelSet.Builder().build()
 
-        handler.handleChannel(primaryChannel("MediumFast"), session)
-        advanceUntilIdle()
-        assertEquals(1_800_000_000L, meshPrefs.nodeSyncs[MY_NODE_NUM], "same name keeps the sync")
+            handler.handleChannel(primaryChannel("MediumFast"), session)
+            handler.handleChannel(primaryChannel("MediumFast"), session)
+            advanceUntilIdle()
+            assertEquals(1_800_000_000L, meshPrefs.nodeSyncs[MY_NODE_NUM], "same name keeps the sync")
 
-        handler.handleChannel(primaryChannel("LongFast"), session)
-        advanceUntilIdle()
-        assertEquals(0L, meshPrefs.nodeSyncs[MY_NODE_NUM])
-    }
+            handler.handleChannel(primaryChannel("LongFast"), session)
+            advanceUntilIdle()
+            assertEquals(0L, meshPrefs.nodeSyncs[MY_NODE_NUM])
+        }
 
     // ---------- handleChannel ----------
 

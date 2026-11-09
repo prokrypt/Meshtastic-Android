@@ -85,8 +85,10 @@ class CommandSenderImpl(
 ) : CommandSender {
     private val currentPacketId = atomic(Random(nowMillis).nextLong().absoluteValue)
 
-    /** Node number to when its key was last pushed to the radio, see [shareKeyBeforePkc]. */
-    private val keyPushedAt = MutableStateFlow<Map<Int, Long>>(emptyMap())
+    /** When each node's key was last pushed, see [shareKeyBeforePkc], for the radio session they were pushed in. */
+    private data class KeyPushes(val session: Any?, val at: Map<Int, Long>)
+
+    private val keyPushes = MutableStateFlow(KeyPushes(null, emptyMap()))
 
     private val localConfig = MutableStateFlow(LocalConfig.Builder().build())
     private val channelSet = MutableStateFlow(ChannelSet.Builder().build())
@@ -633,9 +635,12 @@ class CommandSenderImpl(
     private fun shareKey(myNum: Int, node: Node) {
         val key = node.publicKey ?: node.user.public_key
         val now = nowMillis
-        val due = keyPushedAt.value[node.num]?.let { now - it >= KEY_PUSH_INTERVAL_MS } ?: true
+        // Another radio, or the same one after a reboot (its add_contact entries are RAM-only), has none of them.
+        val session = nodeManager.connectionIdentity.value
+        val pushes = keyPushes.value.takeIf { it.session == session } ?: KeyPushes(session, emptyMap())
+        val due = pushes.at[node.num]?.let { now - it >= KEY_PUSH_INTERVAL_MS } ?: true
         if (key.size != PUBLIC_KEY_SIZE || !due) return
-        keyPushedAt.value = keyPushedAt.value + (node.num to now)
+        keyPushes.value = pushes.copy(at = pushes.at + (node.num to now))
         val contact =
             SharedContact.Builder()
                 .also { wb ->

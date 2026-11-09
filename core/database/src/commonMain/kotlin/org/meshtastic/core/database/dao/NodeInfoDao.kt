@@ -295,6 +295,10 @@ interface NodeInfoDao {
                 longName = existingNode.longName,
                 shortName = existingNode.shortName,
                 manuallyVerified = incomingNode.manuallyVerified || existingNode.manuallyVerified,
+                // A placeholder comes from memory that never held this node, so its flags are defaults, not choices.
+                isFavorite = incomingNode.isFavorite || existingNode.isFavorite,
+                isIgnored = incomingNode.isIgnored || existingNode.isIgnored,
+                isMuted = incomingNode.isMuted || existingNode.isMuted,
                 notes = resolvedNotes,
                 displayName = resolvedDisplayName,
                 powerChannelLabels = resolvedPowerChannelLabels,
@@ -521,6 +525,25 @@ interface NodeInfoDao {
     }
 
     @Upsert suspend fun putAll(nodes: List<NodeEntity>)
+
+    /**
+     * A peer's firmware 2.8 renumber (num = crc32(public key)), proved by a NodeInfo whose XEdDSA signature the radio
+     * verified: moves every row holding the same key under another number into [node], as a config install does for the
+     * nodes the radio dumps. Writes nothing when [node]'s number is not canonical or no other row holds the key.
+     *
+     * @return the numbers whose rows were migrated away.
+     */
+    @Transaction
+    suspend fun adoptRenumberedNode(node: NodeEntity): List<Int> {
+        node.publicKey = node.user.public_key
+        val key = node.publicKey?.takeIf { it.isUsableKey() && node.hasCanonicalNum() } ?: return emptyList()
+        val stale = findNodesByPublicKeys(listOf(key)).filter { it.num != node.num }
+        if (stale.isNotEmpty()) {
+            stale.forEach { migrateNodeIdentity(from = it, to = node) }
+            upsert(node)
+        }
+        return stale.map { it.num }
+    }
 
     /**
      * Clears the unheard flag on every node. Called when the connected firmware cannot report

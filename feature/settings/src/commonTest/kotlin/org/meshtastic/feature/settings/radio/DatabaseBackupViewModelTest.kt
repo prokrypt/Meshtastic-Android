@@ -34,6 +34,7 @@ import org.meshtastic.core.database.DatabaseBackupOperations
 import org.meshtastic.core.database.RestoreStageResult
 import org.meshtastic.core.model.ConnectionState
 import org.meshtastic.core.repository.FileService
+import org.meshtastic.core.testing.FakeMeshPrefs
 import org.meshtastic.core.testing.FakeNodeRepository
 import org.meshtastic.core.testing.FakeRadioController
 import org.meshtastic.core.testing.FakeRadioPrefs
@@ -54,6 +55,7 @@ class DatabaseBackupViewModelTest {
     private val radioController = FakeRadioController()
     private val radioPrefs = FakeRadioPrefs()
     private val alertManager = AlertManager()
+    private val meshPrefs = FakeMeshPrefs().apply { nodeSyncs[1] = 1_800_000_000L }
     private val backupService = FakeBackupOperations(radioController)
     private val fileService = FakeFileService()
 
@@ -107,6 +109,7 @@ class DatabaseBackupViewModelTest {
                 radioController = radioController,
                 radioPrefs = radioPrefs,
                 alertManager = alertManager,
+                meshPrefs = meshPrefs,
             )
     }
 
@@ -191,6 +194,7 @@ class DatabaseBackupViewModelTest {
         assertEquals("n", radioController.lastSetDeviceAddress)
         assertEquals(listOf(DEVICE_DB), backupService.exported)
         assertEquals(listOf(DEVICE_DB), backupService.staged)
+        assertTrue(meshPrefs.nodeSyncs.isEmpty(), "a staged restore forgets the trimmed node-list syncs")
     }
 
     @Test

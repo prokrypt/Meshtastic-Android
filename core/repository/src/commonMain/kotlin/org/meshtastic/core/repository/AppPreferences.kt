@@ -413,10 +413,16 @@ interface MeshPrefs {
     /** Epoch seconds when this app last finished a node-list sync with radio [nodeNum]; 0 when never or unknown. */
     suspend fun lastNodeSync(nodeNum: Int): Long
 
-    fun setLastNodeSync(nodeNum: Int, epochSeconds: Long)
+    suspend fun setLastNodeSync(nodeNum: Int, epochSeconds: Long)
+
+    /**
+     * Records radio [nodeNum]'s [kind] fingerprint (its LoRa slot, its primary channel). When one was recorded before
+     * and differs, also forgets that radio's node-list sync, in the same write, and returns true.
+     */
+    suspend fun recordNodeSyncConfig(nodeNum: Int, kind: String, fingerprint: String): Boolean
 
     /** Forgets every node-list sync, so the next connection asks each radio for its full list. */
-    fun clearNodeSyncs()
+    suspend fun clearNodeSyncs()
 }
 
 /** Reactive interface for TAK server settings. */

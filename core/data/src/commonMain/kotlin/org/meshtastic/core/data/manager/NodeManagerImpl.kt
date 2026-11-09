@@ -572,7 +572,11 @@ class NodeManagerImpl(
                         // authoritative; a missing local number receives the same persisted fallback as a direct load.
                         val liveByNum = state.index.byNum
                         val merged = filteredSnapshot.toMutableMap()
-                        liveByNum.forEach { (num, node) -> merged[num] = node }
+                        liveByNum.forEach { (num, node) ->
+                            // A live placeholder (heard before its row was in memory) must not hide the stored
+                            // identity, key and flags; the stored row already carries what the placeholder wrote.
+                            if (num !in merged || !NodeIndex.isDefaultIdentityPlaceholder(node)) merged[num] = node
+                        }
                         state
                             .copy(
                                 index = NodeIndex.fromByNum(merged),
@@ -637,6 +641,21 @@ class NodeManagerImpl(
     override fun removeByNodenum(nodeNum: Int) {
         nodeState.update { state -> state.copy(index = state.index.remove(nodeNum), revision = state.revision + 1) }
         serviceNotifications.cancelLowBatteryNotification(nodeNum)
+    }
+
+    override fun adoptSignedRenumber(nodeNum: Int, session: RadioSessionContext?) {
+        val node = nodeState.value.index.byNum[nodeNum]?.takeIf { shouldPersist(it) } ?: return
+        if (nodePublicKeyHint(node)?.crc32()?.toInt() != nodeNum) return
+        radioInterfaceService.launchSessionWork(scope, session) {
+            persistenceLane(nodeNum).withLock {
+                val latest = nodeState.value.index.byNum[nodeNum] ?: return@withLock
+                val removed = nodeRepository.adoptRenumberedNode(latest)
+                if (removed.isNotEmpty()) {
+                    Logger.i { "Signed NodeInfo moved ${removed.size} older number(s) to their canonical node" }
+                    applyTrustedIdentityMigrations(removed)
+                }
+            }
+        }
     }
 
     override fun applyTrustedIdentityMigrations(removedNums: Collection<Int>) {

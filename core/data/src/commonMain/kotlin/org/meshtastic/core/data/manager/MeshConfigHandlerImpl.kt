@@ -21,7 +21,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import org.koin.core.annotation.Single
@@ -84,10 +83,7 @@ class MeshConfigHandlerImpl(
             }
         if (admitted) {
             launchPersistenceForSession(session, "config ${config.summarize()} persist") {
-                config.lora?.let { lora ->
-                    val previous = radioConfigRepository.localConfigFlow.firstOrNull()?.lora
-                    if (previous != null && previous.heardSlot != lora.heardSlot) forgetNodeSync("LoRa slot")
-                }
+                config.lora?.let { lora -> recordNodeSyncConfig("slot", lora.heardSlot.joinToString()) }
                 radioConfigRepository.setLocalConfig(config)
             }
         }
@@ -142,8 +138,8 @@ class MeshConfigHandlerImpl(
             // We always want to save channel settings we receive from the radio.
             launchPersistenceForSession(session, "channel persist") {
                 if (channel.role == Channel.Role.PRIMARY) {
-                    val previous = radioConfigRepository.channelSetFlow.firstOrNull()?.settings?.firstOrNull()?.name
-                    if (previous != null && previous != channel.settings?.name) forgetNodeSync("primary channel")
+                    val settings = channel.settings
+                    recordNodeSyncConfig("primary", "${settings?.name}/${settings?.psk?.hex()}")
                 }
                 radioConfigRepository.updateChannelSettings(channel)
             }
@@ -186,13 +182,16 @@ class MeshConfigHandlerImpl(
     }
 
     /**
-     * Nodes a trimmed node-list sync would skip keep their heard_on_current_lora flag from before the change, so the
-     * next sync must be a full one. Heals changes made by another client or on the radio between sessions.
+     * Nodes a trimmed node-list sync would skip keep their heard_on_current_lora flag from before a LoRa slot or
+     * primary channel change, so the next sync must be a full one. Compared per radio against what it reported last
+     * time (the stored config is cleared at each handshake and shared by all radios), which also heals changes made by
+     * another client or on the radio between sessions.
      */
-    private fun forgetNodeSync(what: String) {
+    private suspend fun recordNodeSyncConfig(kind: String, fingerprint: String) {
         val myNodeNum = nodeManager.myNodeNum.value ?: return
-        Logger.i { "$what changed since the last connection; next node sync asks for the full list" }
-        meshPrefs.setLastNodeSync(myNodeNum, 0L)
+        if (meshPrefs.recordNodeSyncConfig(myNodeNum, kind, fingerprint)) {
+            Logger.i { "Radio $kind changed since the last connection; next node sync asks for the full list" }
+        }
     }
 
     /**

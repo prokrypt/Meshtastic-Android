@@ -41,6 +41,7 @@ import org.meshtastic.core.model.NodeAddress
 import org.meshtastic.core.model.Position
 import org.meshtastic.core.repository.AwaitedSendResult
 import org.meshtastic.core.repository.AwaitedSendStatus
+import org.meshtastic.core.repository.ConnectionIdentity
 import org.meshtastic.core.repository.LocalNodeUnavailableException
 import org.meshtastic.core.repository.NeighborInfoHandler
 import org.meshtastic.core.repository.NodeManager
@@ -69,6 +70,8 @@ import kotlin.test.assertTrue
 class CommandSenderImplTest {
     private val packetHandler = mock<PacketHandler>(MockMode.autofill)
     private val nodeManager = mock<NodeManager>(MockMode.autofill)
+    private val connectionIdentity =
+        MutableStateFlow<ConnectionIdentity?>(ConnectionIdentity(1, "x", MY_NODE_NUM, null))
     private val radioConfigRepository = mock<RadioConfigRepository>(MockMode.autofill)
     private val tracerouteHandler = mock<TracerouteHandler>(MockMode.autofill)
     private val neighborInfoHandler = mock<NeighborInfoHandler>(MockMode.autofill)
@@ -83,6 +86,7 @@ class CommandSenderImplTest {
         every { radioConfigRepository.channelSetFlow } returns flowOf(ChannelSet.Builder().build())
         every { nodeManager.myNodeNum } returns MutableStateFlow(MY_NODE_NUM)
         every { nodeManager.nodeDBbyNodeNum } returns emptyMap()
+        every { nodeManager.connectionIdentity } returns connectionIdentity
         every { sessionManager.getPasskey(any()) } returns ByteString.EMPTY
 
         commandSender =
@@ -243,6 +247,20 @@ class CommandSenderImplTest {
         val contact = requireNotNull(AdminMessage.ADAPTER.decode(requireNotNull(packet.decoded).payload).add_contact)
         assertEquals(DEST_NODE, contact.node_num)
         assertEquals(key, contact.user?.public_key)
+    }
+
+    @Test
+    fun pkcUnicast_pushesTheKeyAgainToANewRadioSession() = runTest {
+        keyedDestination()
+        val contacts = mutableListOf<ToRadio>()
+        every { packetHandler.sendToRadio(capture(contacts)) } returns Unit
+        everySuspend { packetHandler.sendToRadio(any<MeshPacket>()) } returns true
+
+        commandSender.requestTelemetry(requestId = 0, destNum = DEST_NODE, typeValue = 0)
+        connectionIdentity.value = ConnectionIdentity(2, "y", MY_NODE_NUM + 1, null)
+        commandSender.requestTelemetry(requestId = 0, destNum = DEST_NODE, typeValue = 0)
+
+        assertEquals(2, contacts.size, "another radio (or a rebooted one) has not seen the first push")
     }
 
     @Test

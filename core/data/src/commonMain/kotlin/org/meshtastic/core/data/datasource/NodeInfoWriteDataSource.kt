@@ -30,6 +30,9 @@ interface NodeInfoWriteDataSource {
     /** @return node numbers removed by identity migration (see `NodeInfoDao.installConfig`). */
     suspend fun installConfig(mi: MyNodeEntity, nodes: List<NodeEntity>): List<Int>
 
+    /** @return node numbers migrated into [node] (see `NodeInfoDao.adoptRenumberedNode`). */
+    suspend fun adoptRenumberedNode(node: NodeEntity): List<Int>
+
     suspend fun clearNodeDB(preserveFavorites: Boolean)
 
     suspend fun clearMyNodeInfo()

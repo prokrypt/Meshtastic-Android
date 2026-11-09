@@ -3340,6 +3340,34 @@ class NodeManagerImplTest {
     }
 
     @Test
+    fun `live placeholder during the load window yields to the stored identity`() = testScope.runTest {
+        val num = 5006
+        val stored = makeKnownNode(num, validPk, "Stored").copy(isFavorite = true)
+
+        val snapshotRead = CompletableDeferred<Unit>()
+        val snapshotRelease = CompletableDeferred<Unit>()
+        everySuspend { nodeRepository.getNodeDbSnapshot() } calls
+            {
+                snapshotRead.complete(Unit)
+                snapshotRelease.await()
+                mapOf(num to stored)
+            }
+        every { nodeRepository.myNodeInfo } returns MutableStateFlow(null)
+
+        nodeManager.loadCachedNodeDB()
+        snapshotRead.await()
+        // A position from a node not yet in memory creates a keyless default placeholder.
+        nodeManager.updateNode(num) { it.copy(lastHeard = 300) }
+        snapshotRelease.complete(Unit)
+        advanceUntilIdle()
+
+        val result = assertNotNull(nodeManager.nodeDBbyNodeNum[num])
+        assertEquals("Stored", result.user.long_name)
+        assertEquals(validPk, result.publicKey ?: result.user.public_key)
+        assertTrue(result.isFavorite)
+    }
+
+    @Test
     fun `trusted migration during the load window retires absent number and suppresses replay`() = testScope.runTest {
         val num = 6006
         val snapshotNode = makeKnownNode(num, validPk, "Pre-migration")

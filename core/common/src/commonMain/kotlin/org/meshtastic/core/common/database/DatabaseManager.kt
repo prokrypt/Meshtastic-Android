@@ -51,8 +51,16 @@ interface DatabaseManager {
      * The caller must hold a transport-session lifecycle lease for the full call. [isSessionActive] must represent that
      * lease, not merely whether new work may still be admitted, so association rollover cannot overlap the destination
      * transaction commit.
+     *
+     * Returns true when this call merged the active database into the device's canonical one and switched to it, so
+     * in-memory state loaded from the old database must be reloaded.
      */
-    suspend fun associateDevice(address: String, nodeNum: Int, deviceId: String?, isSessionActive: () -> Boolean)
+    suspend fun associateDevice(
+        address: String,
+        nodeNum: Int,
+        deviceId: String?,
+        isSessionActive: () -> Boolean,
+    ): Boolean
 
     /** Returns true if a database exists for the given device address. */
     fun hasDatabaseFor(address: String?): Boolean

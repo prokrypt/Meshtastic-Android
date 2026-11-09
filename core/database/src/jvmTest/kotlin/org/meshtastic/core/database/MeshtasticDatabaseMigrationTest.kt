@@ -70,6 +70,20 @@ class MeshtasticDatabaseMigrationTest {
     }
 
     /**
+     * Fork guard. Version 68 is the fork's own: 67 plus two composite `log` indices
+     * ([MeshtasticDatabase.MIGRATION_67_68]). Upstream will ship a different 68. Phones already at fork-68 would skip
+     * upstream's 67→68 and fail Room's identity check on every radio's database. If this fails after an upstream sync,
+     * the merge took upstream's `68.json`: keep the fork's, number upstream's new versions above the fork's (upstream
+     * 68 becomes fork 69, and so on), and migrate from fork-68 with upstream's 67→68 steps.
+     */
+    @Test
+    fun forkVersion68IsTheForksOwnSchema() {
+        val schema = File("schemas/org.meshtastic.core.database.MeshtasticDatabase/68.json").readText()
+        val hash = Regex("\"identityHash\": \"([0-9a-f]+)\"").find(schema)?.groupValues?.get(1)
+        assertEquals(FORK_V68_IDENTITY_HASH, hash)
+    }
+
+    /**
      * The 50→51 and 51→52 auto-migrations both recreate `packet` (DROP + RENAME) underneath the `packet_fts` FTS5
      * external-content table. In production (2.8.1, build 29321949) upgraders came out of that chain with the FTS
      * shadow tables desynced from the content table, and every later packet write failed with SQLITE_CORRUPT_VTAB (267,
@@ -792,6 +806,7 @@ class MeshtasticDatabaseMigrationTest {
 
     private companion object {
         const val EARLIEST_SCHEMA_VERSION = 3
+        const val FORK_V68_IDENTITY_HASH = "564f97e5b5cbdbee299346c4224c75a0"
         const val FTS_REBUILD_TO_VERSION = 53
         const val MAINTENANCE_UF2_FROM_VERSION = 54
         const val MAINTENANCE_UF2_TO_VERSION = 55

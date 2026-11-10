@@ -316,9 +316,13 @@ class MeshConfigFlowManagerImpl(
             .onFailure { e -> Logger.e(e) { "Conversation reconciliation failed after handshake" } }
         if (!isActiveSession(session)) return
 
+        // Only a dump after a LoRa slot change (refresh, or a sync record forgotten by stage 1) or the first one into
+        // this DB may mark a node the app holds as heard unheard. Otherwise the radio reports a node unheard because
+        // it lost its RF history, e.g. evicted and re-created by the add_contact pushed before a request.
+        val adoptUnheard = state.refresh || meshPrefs.lastNodeSync(info.myNodeNum) == 0L
         val entities = mutableListOf<Node>()
         state.nodes.forEach { nodeInfo ->
-            nodeManager.installNodeInfo(nodeInfo)
+            nodeManager.installNodeInfo(nodeInfo, adoptUnheard)
             if (!isActiveSession(session)) return
             nodeManager.nodeDBbyNodeNum[nodeInfo.num]?.let(entities::add)
                 ?: Logger.w { "Node ${nodeInfo.num} missing after installNodeInfo; skipping" }

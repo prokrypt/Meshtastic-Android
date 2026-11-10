@@ -1011,6 +1011,30 @@ class NodeManagerImplTest {
     }
 
     @Test
+    fun `installNodeInfo without adoptUnheard keeps a known heard node heard`() {
+        nodeManager.setFirmwareVersion("2.8.1")
+        nodeManager.updateNode(0x11) { it.copy(heardOnCurrentLora = true) }
+        nodeManager.updateNode(0x22) { it.copy(heardOnCurrentLora = false) }
+        val unheard = { num: Int ->
+            ProtoNodeInfo.Builder()
+                .also { wb ->
+                    wb.num = num
+                    wb.heard_on_current_lora = false
+                }
+                .build()
+        }
+
+        listOf(0x11, 0x22, 0x33).forEach { nodeManager.installNodeInfo(unheard(it), adoptUnheard = false) }
+
+        assertTrue(nodeManager.nodeDBbyNodeNum[0x11]!!.heardOnCurrentLora, "known heard node stays heard")
+        assertFalse(nodeManager.nodeDBbyNodeNum[0x22]!!.heardOnCurrentLora, "known unheard node stays unheard")
+        assertFalse(nodeManager.nodeDBbyNodeNum[0x33]!!.heardOnCurrentLora, "new node takes the radio's answer")
+
+        nodeManager.installNodeInfo(unheard(0x11), adoptUnheard = true)
+        assertFalse(nodeManager.nodeDBbyNodeNum[0x11]!!.heardOnCurrentLora, "after a slot change the radio decides")
+    }
+
+    @Test
     fun `installNodeInfo takes the manually verified flag from the radio`() {
         val nodeNum = 5678
         val info =

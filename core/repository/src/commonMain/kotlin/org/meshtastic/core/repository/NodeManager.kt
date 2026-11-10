@@ -223,8 +223,13 @@ interface NodeManager : NodeIdLookup {
     /**
      * Installs node information in memory. Callers that require an immediate standalone write use
      * [installNodeInfoAndPersist]; configuration handshakes batch the resulting snapshot through the repository.
+     *
+     * [adoptUnheard] false keeps a known node the app holds as heard on the current LoRa settings heard even when the
+     * radio reports it unheard: with the settings unchanged, that report only means the radio lost the node's RF
+     * history (evicted, then re-created by an add_contact). Pass true after a settings change, when the radio's answer
+     * is new.
      */
-    fun installNodeInfo(info: ProtoNodeInfo)
+    fun installNodeInfo(info: ProtoNodeInfo, adoptUnheard: Boolean = true)
 
     /** Installs node information and awaits any required persistence. */
     suspend fun installNodeInfoAndPersist(info: ProtoNodeInfo)

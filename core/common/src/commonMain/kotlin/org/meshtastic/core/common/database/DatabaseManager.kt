@@ -52,8 +52,8 @@ interface DatabaseManager {
      * lease, not merely whether new work may still be admitted, so association rollover cannot overlap the destination
      * transaction commit.
      *
-     * Returns true when this call switched to the device's canonical database (after merging the active one into it,
-     * or leaving it untouched because it is another radio's), so in-memory state loaded from the old database must be
+     * Returns true when this call switched to the device's canonical database (after merging the active one into it, or
+     * leaving it untouched because it is another radio's), so in-memory state loaded from the old database must be
      * reloaded.
      */
     suspend fun associateDevice(

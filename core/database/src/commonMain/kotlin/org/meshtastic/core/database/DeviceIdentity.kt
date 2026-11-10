@@ -32,8 +32,9 @@ private val HEX_DEVICE_ID = Regex("[0-9a-fA-F]{16,64}")
  * by all hardware (e.g. classic ESP32) and deliberately zeroed for unauthenticated clients in lockdown mode, so callers
  * must always tolerate null.
  */
-internal fun validDeviceIdOrNull(id: String?): String? =
-    id?.takeIf { it != MyNodeEntity.DEVICE_ID_UNKNOWN && it.matches(HEX_DEVICE_ID) }
+internal fun validDeviceIdOrNull(id: String?): String? = id?.takeIf {
+    it != MyNodeEntity.DEVICE_ID_UNKNOWN && it.matches(HEX_DEVICE_ID)
+}
 
 /** Datastore key mapping a node number to its canonical DB. Legacy: node numbers renumber under firmware 2.8. */
 internal fun nodeDbPrefKey(nodeNum: Int): Preferences.Key<String> =

@@ -138,6 +138,7 @@ import org.jetbrains.compose.resources.stringResource
 import org.koin.compose.viewmodel.koinViewModel
 import org.meshtastic.app.map.component.CLUSTER_MAX_DISTANCE_DP
 import org.meshtastic.app.map.component.CustomTileProviderManagerSheet
+import org.meshtastic.app.map.component.MIN_CLUSTER_SIZE
 import org.meshtastic.app.map.component.MapTypeDropdown
 import org.meshtastic.app.map.component.NodeClusterMarkers
 import org.meshtastic.app.map.component.WaypointMarkers
@@ -364,10 +365,10 @@ private fun LatLngBounds.atLeastSpan(meters: Double): LatLngBounds {
 private const val MIN_COS_LATITUDE = 0.01
 
 /**
- * Nodes closer than this on screen merge into one chip with a count badge, so every chip stays tappable. One chip's
- * minimum width ([org.meshtastic.core.ui.component.NodeChip]).
+ * Nodes closer than this on screen merge into one chip with a count badge: one chip's minimum height
+ * ([org.meshtastic.core.ui.component.NodeChip]), so only chips that would sit almost on top of each other merge.
  */
-private const val MERGE_DISTANCE_DP = 64
+private const val MERGE_DISTANCE_DP = 28
 
 // Web Mercator ground meters per dp at zoom 0 on the equator, for Google's 256 dp tiles.
 private const val METERS_PER_DP_AT_ZOOM_0 = 156_543.033_92
@@ -1415,10 +1416,15 @@ internal fun rememberNodeClusterItems(
                 myNodeNum = myNodeNum,
             )
         }
-        stackCoincident(nodes, myNodeNum, spreadMeters).map { stack ->
-            val members = if (stack.count > 1) stack.members.map(::itemFor) else emptyList()
-            itemFor(stack.top).copy(stackMembers = members)
-        }
+        stackCoincident(nodes, myNodeNum, spreadMeters)
+            .flatMap { merged ->
+                // Bubbles win: a group big enough to bubble stays as its close stacks, for the clustering to gather.
+                if (merged.count >= MIN_CLUSTER_SIZE) stackCoincident(merged.members, myNodeNum) else listOf(merged)
+            }
+            .map { stack ->
+                val members = if (stack.count > 1) stack.members.map(::itemFor) else emptyList()
+                itemFor(stack.top).copy(stackMembers = members)
+            }
     }
 }
 

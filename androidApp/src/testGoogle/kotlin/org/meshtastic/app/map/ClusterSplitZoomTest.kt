@@ -49,7 +49,7 @@ class ClusterSplitZoomTest {
 
     @Test
     fun `merge distance follows zoom but never drops below the stack spread`() {
-        assertEquals(64 * 156_543.033_92 / 32_768, mergeSpreadMeters(zoom = 15, latitude = 0.0), 1e-6)
+        assertEquals(28 * 156_543.033_92 / 32_768, mergeSpreadMeters(zoom = 15, latitude = 0.0), 1e-6)
         assertEquals(STACK_SPREAD_METERS, mergeSpreadMeters(zoom = 21, latitude = 37.8))
     }
 }

@@ -16,32 +16,57 @@
  */
 package org.meshtastic.app.map.model
 
+import androidx.compose.runtime.Immutable
 import com.google.android.gms.maps.model.LatLng
 import com.google.maps.android.clustering.ClusterItem
-import org.meshtastic.core.model.Node
-import org.meshtastic.core.model.util.precisionRadiusMetersOrNull
-import org.meshtastic.feature.map.MapNodePolicy
 
-data class NodeClusterItem(
-    val node: Node,
+/**
+ * One marker the Google map's clustering places: a node, or the node drawn for several at one spot.
+ *
+ * Two items are equal while everything the clustering and the marker are built from is equal: which node, where it is,
+ * how high it draws, its precision circle, and which nodes share its spot. The rest of the node (when it was last
+ * heard, its name, its readings) is not held here. The chip and the marker's title read it from [liveNodes] when they
+ * are drawn, so a packet that moves no node leaves the list of items equal to the one before it, and the map keeps its
+ * markers instead of clustering and redrawing every one of them.
+ */
+@Immutable
+class NodeClusterItem(
+    val nodeNum: Int,
     val nodePosition: LatLng,
-    val nodeTitle: String,
-    val nodeSnippet: String,
-    val myNodeNum: Int? = null,
+    /** [org.meshtastic.feature.map.MapNodePolicy.priorityOf] this node. */
+    val priority: Int,
+    /** Radius of the node's precision circle, or null when its position is reported in full. */
+    val precisionMeters: Double?,
     /** Every node at this spot, this one included, when more than one is; empty otherwise. */
-    val stackMembers: List<NodeClusterItem> = emptyList(),
+    val stackMemberNums: List<Int> = emptyList(),
+    private val liveNodes: LiveMapNodes,
 ) : ClusterItem {
     override val position: LatLng
         get() = nodePosition
 
-    override val title: String
-        get() = nodeTitle
+    /** Read when asked for, so the "heard ago" in it is as of then. */
+    override val title: String?
+        get() = liveNodes.title(nodeNum)
 
-    override val snippet: String
-        get() = nodeSnippet
+    override val snippet: String?
+        get() = liveNodes.snippet(nodeNum)
 
     override val zIndex: Float
-        get() = MapNodePolicy.priorityOf(node, myNodeNum).toFloat()
+        get() = priority.toFloat()
 
-    fun getPrecisionMeters(): Double? = precisionRadiusMetersOrNull(node.position.precision_bits)
+    override fun equals(other: Any?): Boolean = this === other ||
+        (
+            other is NodeClusterItem &&
+                nodeNum == other.nodeNum &&
+                priority == other.priority &&
+                nodePosition == other.nodePosition &&
+                precisionMeters == other.precisionMeters &&
+                stackMemberNums == other.stackMemberNums
+            )
+
+    // The clustering hashes every item several times a pass; a node is in one item, so its number spreads them.
+    override fun hashCode(): Int = nodeNum
+
+    override fun toString(): String =
+        "NodeClusterItem(nodeNum=$nodeNum, position=$nodePosition, priority=$priority, stack=$stackMemberNums)"
 }

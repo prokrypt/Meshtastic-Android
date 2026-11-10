@@ -22,7 +22,9 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Box
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.CornerRadius
@@ -37,12 +39,18 @@ import org.meshtastic.feature.map.heardJustNow
 /** Peak alpha of the pulse highlight before it fades out. */
 private const val PULSE_MAX_ALPHA = 0.3f
 
+/**
+ * A node's chip, flashed once each time its node is heard.
+ *
+ * @param shouldPulse asked when the node is heard, for a caller that knows the flash could not be seen.
+ */
 @Composable
-fun PulsingNodeChip(node: Node, modifier: Modifier = Modifier) {
+fun PulsingNodeChip(node: Node, modifier: Modifier = Modifier, shouldPulse: () -> Boolean = { true }) {
     val animatedProgress = remember { Animatable(0f) }
+    val currentShouldPulse by rememberUpdatedState(shouldPulse)
 
     LaunchedEffect(node) {
-        if (heardJustNow(node.lastHeard, nowSeconds)) {
+        if (heardJustNow(node.lastHeard, nowSeconds) && currentShouldPulse()) {
             launch {
                 animatedProgress.snapTo(0f)
                 animatedProgress.animateTo(

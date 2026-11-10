@@ -23,12 +23,22 @@ import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.google.android.gms.maps.model.LatLng
 import com.google.maps.android.clustering.Cluster
+import com.google.maps.android.clustering.ClusterManager
 import com.google.maps.android.clustering.algo.NonHierarchicalDistanceBasedAlgorithm
 import com.google.maps.android.clustering.algo.NonHierarchicalViewBasedAlgorithm
 import com.google.maps.android.clustering.algo.ScreenBasedAlgorithmAdapter
@@ -37,8 +47,20 @@ import com.google.maps.android.compose.Circle
 import com.google.maps.android.compose.MapsComposeExperimentalApi
 import com.google.maps.android.compose.clustering.Clustering
 import com.google.maps.android.compose.clustering.ClusteringMarkerProperties
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.yield
+import org.jetbrains.compose.resources.stringResource
+import org.meshtastic.app.map.NodeMarkerSet
+import org.meshtastic.app.map.model.LiveMapNodes
 import org.meshtastic.app.map.model.NodeClusterItem
-import org.meshtastic.feature.map.BaseMapViewModel
+import org.meshtastic.app.map.relativeTimeBuckets
+import org.meshtastic.core.common.util.nowSeconds
+import org.meshtastic.core.model.Node
+import org.meshtastic.core.model.nodeColorsFromNum
+import org.meshtastic.core.model.util.TimeConstants
+import org.meshtastic.core.resources.Res
+import org.meshtastic.core.resources.now
+import org.meshtastic.core.resources.unknown
 import org.meshtastic.feature.map.stackBadgeLabel
 
 const val MIN_CLUSTER_SIZE = 10
@@ -54,22 +76,59 @@ private const val PRECISION_FILL_ALPHA = 0.15f
 // its bottom edge, and bottom padding would lift every chip off its point.
 private val STACK_BADGE_INSET = 12.dp
 
-/** A node's chip, with a Material 3 count badge when it stands for several nodes at one spot. */
+// A marker's title is refreshed this many at a time, with a frame let through in between.
+private const val TITLE_REFRESH_BATCH = 50
+
+/** A node's chip, with a Material 3 count badge when it stands for [stackSize] nodes at one spot. */
 @Composable
-private fun StackedNodeChip(item: NodeClusterItem, modifier: Modifier = Modifier) {
+private fun StackedNodeChip(node: Node, stackSize: Int, shouldPulse: () -> Boolean, modifier: Modifier = Modifier) {
     Box(modifier.padding(start = STACK_BADGE_INSET, top = STACK_BADGE_INSET, end = STACK_BADGE_INSET)) {
         BadgedBox(
             badge = {
-                if (item.stackMembers.size > 1) {
+                if (stackSize > 1) {
                     // Secondary rather than the default error color: a count of nodes is not an alert.
-                    Badge(containerColor = MaterialTheme.colorScheme.secondary) {
-                        Text(stackBadgeLabel(item.stackMembers.size))
-                    }
+                    Badge(containerColor = MaterialTheme.colorScheme.secondary) { Text(stackBadgeLabel(stackSize)) }
                 }
             },
         ) {
-            PulsingNodeChip(node = item.node)
+            PulsingNodeChip(node = node, shouldPulse = shouldPulse)
         }
+    }
+}
+
+/**
+ * The chip a marker is drawn from. It reads its node from [liveNodes], so it redraws when that node changes and is left
+ * alone when any other does.
+ */
+@OptIn(MapsComposeExperimentalApi::class)
+@Composable
+private fun NodeMarkerChip(item: NodeClusterItem, liveNodes: LiveMapNodes, isOnScreen: (LatLng) -> Boolean) {
+    ClusteringMarkerProperties(zIndex = item.zIndex)
+    val node by remember(liveNodes, item.nodeNum) { liveNodes.state(item.nodeNum) }
+    node?.let {
+        StackedNodeChip(
+            node = it,
+            stackSize = item.stackMemberNums.size,
+            // A pulse redraws the marker's bitmap every frame for a second; off screen there is nobody to see it.
+            shouldPulse = { isOnScreen(item.position) },
+        )
+    }
+}
+
+/** The circle that says where a node with reduced position precision could be. */
+@Composable
+private fun PrecisionCircle(item: NodeClusterItem) {
+    val precisionMeters = item.precisionMeters
+    if (precisionMeters != null && precisionMeters > 0) {
+        val color = Color(nodeColorsFromNum(item.nodeNum).second)
+        Circle(
+            center = item.position,
+            radius = precisionMeters,
+            fillColor = color.copy(alpha = PRECISION_FILL_ALPHA),
+            strokeColor = color,
+            strokeWidth = 2f,
+            zIndex = 0f,
+        )
     }
 }
 
@@ -80,95 +139,139 @@ private fun StackedNodeChip(item: NodeClusterItem, modifier: Modifier = Modifier
 private const val VIEW_BASED_ALGORITHM_NODE_THRESHOLD = 1000
 
 /**
- * Renders node markers with clustering via the library's [Clustering] composable.
+ * Renders the nodes as a clustered marker layer inside a `GoogleMap` content scope.
  *
- * Each unclustered item is composed as a [PulsingNodeChip] (`clusterItemContent`), badged with a count when it stands
- * for several nodes at one spot, with its z-index forwarded through [ClusteringMarkerProperties]; cluster bubbles keep
- * the library's default rendering, labeled with their exact count. Precision circles are drawn for every item,
- * clustered or not.
+ * [nodeMarkers] is collected here, not by the caller, so a packet recomposes this function and the one chip whose node
+ * it changed. The clustering itself only sees [NodeMarkerSet.items], which stays the same list until a marker has to
+ * move, appear or go.
  *
- * Requires maps-compose >= 8.4.0: earlier versions composed cluster items into a detached `ComposeView` that carried no
- * lifecycle/saved-state owners, crashing under the Navigation 3 hierarchy (fixed upstream in
- * googlemaps/android-maps-compose#930, which this file previously worked around with a custom [DefaultClusterRenderer]
- * assigning pre-baked bitmaps).
- *
- * Below [VIEW_BASED_ALGORITHM_NODE_THRESHOLD] nodes, clusters with the default `NonHierarchicalDistanceBasedAlgorithm`
- * (pans smoother, and clustering the whole node set is cheap at this scale). Above it, switches to
- * [NonHierarchicalViewBasedAlgorithm] to avoid a spread-out mesh returning nearly every node as its own unclustered
- * result at high zoom (#4544) - at the cost of its zero-margin, camera-idle-only viewport bounds popping markers in
- * abruptly while panning.
+ * Must be called from within a `GoogleMap { }` content lambda.
  */
-@OptIn(MapsComposeExperimentalApi::class)
+@Suppress("LongParameterList")
 @Composable
 fun NodeClusterMarkers(
-    nodeClusterItems: List<NodeClusterItem>,
-    mapFilterState: BaseMapViewModel.MapFilterState,
+    nodeMarkers: StateFlow<NodeMarkerSet>,
+    liveNodes: LiveMapNodes,
+    showPrecisionCircle: Boolean,
+    isOnScreen: (LatLng) -> Boolean,
     navigateToNodeDetails: (Int) -> Unit,
     onClusterClick: (Cluster<NodeClusterItem>) -> Boolean,
-    onStackClick: (List<NodeClusterItem>) -> Unit,
+    onStackClick: (List<Int>) -> Unit,
+) {
+    val markerSet by nodeMarkers.collectAsStateWithLifecycle()
+    val unknownText = stringResource(Res.string.unknown)
+    val nowText = stringResource(Res.string.now)
+    // Before the clustering can ask for a chip or a title: it works from the items below on a later frame.
+    SideEffect {
+        liveNodes.setRelativeTimeTexts(unknown = unknownText, now = nowText)
+        liveNodes.update(markerSet.nodes)
+    }
+    NodeClusterLayer(
+        items = markerSet.items,
+        liveNodes = liveNodes,
+        showPrecisionCircle = showPrecisionCircle,
+        isOnScreen = isOnScreen,
+        navigateToNodeDetails = navigateToNodeDetails,
+        onClusterClick = onClusterClick,
+        onStackClick = onStackClick,
+    )
+}
+
+/** Skipped while [items] is the list it was last given, which is what keeps a packet away from the clustering. */
+@Suppress("LongParameterList")
+@OptIn(MapsComposeExperimentalApi::class)
+@Composable
+private fun NodeClusterLayer(
+    items: List<NodeClusterItem>,
+    liveNodes: LiveMapNodes,
+    showPrecisionCircle: Boolean,
+    isOnScreen: (LatLng) -> Boolean,
+    navigateToNodeDetails: (Int) -> Unit,
+    onClusterClick: (Cluster<NodeClusterItem>) -> Boolean,
+    onStackClick: (List<Int>) -> Unit,
 ) {
     val configuration = LocalConfiguration.current
     // One circle per stack, drawn whether or not the stack sits inside a cluster bubble, as the Apple and MapLibre maps
     // do: the circle says where the nodes could be, which a count bubble does not.
-    if (mapFilterState.showPrecisionCircle) {
-        nodeClusterItems.forEach { item ->
-            val precisionMeters = item.getPrecisionMeters()
-            if (precisionMeters != null && precisionMeters > 0) {
-                key(item.node.num) {
-                    Circle(
-                        center = item.position,
-                        radius = precisionMeters,
-                        fillColor = Color(item.node.colors.second).copy(alpha = PRECISION_FILL_ALPHA),
-                        strokeColor = Color(item.node.colors.second),
-                        strokeWidth = 2f,
-                        zIndex = 0f,
-                    )
-                }
-            }
-        }
+    if (showPrecisionCircle) {
+        items.forEach { item -> key(item.nodeNum) { PrecisionCircle(item) } }
     }
+    var clusterManager by remember { mutableStateOf<ClusterManager<NodeClusterItem>?>(null) }
     Clustering(
-        items = nodeClusterItems,
+        items = items,
         onClusterClick = onClusterClick,
         // A tap goes where the MapLibre map's does: a stack lists its nodes, a single node opens its details.
         onClusterItemClick = { item ->
-            if (item.stackMembers.size > 1) onStackClick(item.stackMembers) else navigateToNodeDetails(item.node.num)
+            if (item.stackMemberNums.size > 1) {
+                onStackClick(item.stackMemberNums)
+            } else {
+                navigateToNodeDetails(item.nodeNum)
+            }
             true
         },
-        clusterItemContent = { item ->
-            ClusteringMarkerProperties(zIndex = item.zIndex)
-            StackedNodeChip(item)
-        },
-        onClusterManager = { clusterManager ->
+        clusterItemContent = { item -> NodeMarkerChip(item, liveNodes, isOnScreen) },
+        onClusterManager = { manager ->
+            clusterManager = manager
             // The library renderer extends DefaultClusterRenderer; configure it once.
-            val renderer = clusterManager.renderer as? DefaultClusterRenderer<*>
+            val renderer = manager.renderer as? DefaultClusterRenderer<*>
             if (renderer != null && (renderer.minClusterSize != MIN_CLUSTER_SIZE || !renderer.showExactCount)) {
                 renderer.minClusterSize = MIN_CLUSTER_SIZE
                 // Exact counts, "1.2k" past a thousand: what the MapLibre map's point_count_abbreviated label and the
                 // Apple map's cluster badge show, where the library's default buckets read "10+", "20+", "50+".
                 renderer.showExactCount = true
                 renderer.useCompactNumberFormatting = true
-                clusterManager.cluster()
+                manager.cluster()
             }
             // Only swap on a threshold crossing; otherwise just resize in place - replacing re-migrates every item.
-            val algorithm = clusterManager.algorithm
-            val needsViewBasedAlgorithm = nodeClusterItems.size > VIEW_BASED_ALGORITHM_NODE_THRESHOLD
+            val algorithm = manager.algorithm
+            val needsViewBasedAlgorithm = items.size > VIEW_BASED_ALGORITHM_NODE_THRESHOLD
             when {
                 needsViewBasedAlgorithm && algorithm is NonHierarchicalViewBasedAlgorithm<*> ->
                     algorithm.updateViewSize(configuration.screenWidthDp, configuration.screenHeightDp)
 
                 needsViewBasedAlgorithm ->
-                    clusterManager.setAlgorithm(
+                    manager.setAlgorithm(
                         NonHierarchicalViewBasedAlgorithm(configuration.screenWidthDp, configuration.screenHeightDp),
                     )
 
                 algorithm is NonHierarchicalViewBasedAlgorithm<*> ->
                     // Kotlin won't resolve setAlgorithm's Algorithm<T> overload for a plain
                     // NonHierarchicalDistanceBasedAlgorithm; wrap it to force the ScreenBasedAlgorithm<T> overload.
-                    clusterManager.setAlgorithm(
+                    manager.setAlgorithm(
                         ScreenBasedAlgorithmAdapter(NonHierarchicalDistanceBasedAlgorithm<NodeClusterItem>()),
                     )
             }
         },
     )
+    clusterManager?.let { MarkerTitleRefresh(clusterManager = it, items = items) }
+}
+
+/**
+ * Keeps the "heard ago" in each marker's title, which is what a screen reader reads out, moving with the clock.
+ *
+ * The clustering sets a title when it adds a marker and again whenever it lays the markers out. Between those, nothing
+ * else would touch it: a node's item no longer changes just because a minute went by.
+ */
+@Composable
+private fun MarkerTitleRefresh(clusterManager: ClusterManager<NodeClusterItem>, items: List<NodeClusterItem>) {
+    val minute = rememberRelativeTimeBucket()
+    val currentItems by rememberUpdatedState(items)
+    LaunchedEffect(clusterManager, minute) {
+        @Suppress("UNCHECKED_CAST")
+        val renderer = clusterManager.renderer as? DefaultClusterRenderer<NodeClusterItem> ?: return@LaunchedEffect
+        currentItems.forEachIndexed { index, item ->
+            // Only a node drawn as its own chip has a marker; one inside a bubble has none.
+            renderer.getMarker(item)?.let { marker ->
+                val title = item.title
+                if (marker.title != title) marker.title = title
+            }
+            if (index % TITLE_REFRESH_BATCH == TITLE_REFRESH_BATCH - 1) yield()
+        }
+    }
+}
+
+@Composable
+private fun rememberRelativeTimeBucket(): Long {
+    val buckets = remember { relativeTimeBuckets() }
+    return buckets.collectAsStateWithLifecycle(initialValue = nowSeconds / TimeConstants.SECONDS_PER_MINUTE).value
 }

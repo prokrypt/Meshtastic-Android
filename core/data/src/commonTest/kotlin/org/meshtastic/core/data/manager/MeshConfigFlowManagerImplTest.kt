@@ -279,7 +279,7 @@ class MeshConfigFlowManagerImplTest {
 
         verifySuspend(mode = VerifyMode.exactly(0)) { nodeRepository.insertMetadata(any(), any()) }
         verify(mode = VerifyMode.exactly(0)) { connectionManager.onRadioConfigLoaded() }
-        verify(mode = VerifyMode.exactly(0)) { nodeManager.installNodeInfo(any()) }
+        verify(mode = VerifyMode.exactly(0)) { nodeManager.installNodeInfo(any(), any()) }
     }
 
     @Test
@@ -601,8 +601,41 @@ class MeshConfigFlowManagerImplTest {
         manager.handleConfigComplete(HandshakeConstants.NODE_INFO_NONCE)
         advanceUntilIdle()
 
-        verify { nodeManager.installNodeInfo(NodeInfo.Builder().also { wb -> wb.num = 100 }.build()) }
+        verify { nodeManager.installNodeInfo(NodeInfo.Builder().also { wb -> wb.num = 100 }.build(), any()) }
         verifySuspend { connectionManager.onNodeDbReady() }
+    }
+
+    private fun TestScope.syncOneNode(): NodeInfo {
+        val nodeInfo = NodeInfo.Builder().also { wb -> wb.num = 100 }.build()
+        every { nodeManager.nodeDBbyNodeNum } returns
+            mapOf(100 to org.meshtastic.core.testing.TestDataFactory.createTestNode(num = 100))
+        handleMyInfo(protoMyNodeInfo)
+        advanceUntilIdle()
+        manager.handleLocalMetadata(metadata)
+        advanceUntilIdle()
+        manager.handleConfigComplete(HandshakeConstants.CONFIG_NONCE)
+        advanceTimeBy(STAGE_TRANSITION_ADVANCE_MS)
+        runCurrent()
+        manager.handleNodeInfo(nodeInfo)
+        manager.handleConfigComplete(HandshakeConstants.NODE_INFO_NONCE)
+        advanceUntilIdle()
+        return nodeInfo
+    }
+
+    @Test
+    fun `first node sync into a DB adopts the radio's unheard answers`() = testScope.runTest {
+        val nodeInfo = syncOneNode()
+
+        verify { nodeManager.installNodeInfo(nodeInfo, true) }
+    }
+
+    @Test
+    fun `a later node sync on unchanged settings keeps nodes the app holds as heard`() = testScope.runTest {
+        meshPrefs.nodeSyncs[myNodeNum] = org.meshtastic.core.common.util.nowSeconds - 10 * 60
+
+        val nodeInfo = syncOneNode()
+
+        verify { nodeManager.installNodeInfo(nodeInfo, false) }
     }
 
     @Test
@@ -633,7 +666,7 @@ class MeshConfigFlowManagerImplTest {
         advanceUntilIdle()
 
         verifySuspend { nodeRepository.insertMetadata(myNodeNum, metadata) }
-        verify { nodeManager.installNodeInfo(nodeInfo) }
+        verify { nodeManager.installNodeInfo(nodeInfo, any()) }
         verifySuspend(mode = VerifyMode.exactly(0)) { nodeManager.installNodeInfoAndPersist(any()) }
         verifySuspend(mode = VerifyMode.exactly(1)) { nodeRepository.installConfig(any(), any()) }
         verify { nodeManager.setNodeDbReady(true) }
@@ -647,7 +680,7 @@ class MeshConfigFlowManagerImplTest {
         val secondNode = NodeInfo.Builder().also { wb -> wb.num = 200 }.build()
         val testNode = org.meshtastic.core.testing.TestDataFactory.createTestNode(num = firstNode.num)
         every { nodeManager.nodeDBbyNodeNum } returns mapOf(firstNode.num to testNode)
-        every { nodeManager.installNodeInfo(any()) } calls { activeSessionFlow.value = null }
+        every { nodeManager.installNodeInfo(any(), any()) } calls { activeSessionFlow.value = null }
 
         handleMyInfo(protoMyNodeInfo)
         advanceUntilIdle()
@@ -661,7 +694,7 @@ class MeshConfigFlowManagerImplTest {
         assertTrue(manager.handleConfigComplete(HandshakeConstants.NODE_INFO_NONCE, activeSession))
         advanceUntilIdle()
 
-        verify(mode = VerifyMode.exactly(1)) { nodeManager.installNodeInfo(any()) }
+        verify(mode = VerifyMode.exactly(1)) { nodeManager.installNodeInfo(any(), any()) }
         verifySuspend(mode = VerifyMode.exactly(0)) { nodeRepository.installConfig(any(), any()) }
         verify(mode = VerifyMode.exactly(0)) { nodeManager.setNodeDbReady(true) }
         verify(mode = VerifyMode.exactly(0)) { nodeManager.setAllowNodeDbWrites(true) }
@@ -687,7 +720,7 @@ class MeshConfigFlowManagerImplTest {
         manager.handleConfigComplete(HandshakeConstants.NODE_INFO_NONCE)
         advanceUntilIdle()
 
-        verify { nodeManager.installNodeInfo(any()) }
+        verify { nodeManager.installNodeInfo(any(), any()) }
         verify { nodeManager.setNodeDbReady(true) }
         verify { nodeManager.setAllowNodeDbWrites(true) }
         verifySuspend { connectionManager.onNodeDbReady() }
@@ -878,7 +911,7 @@ class MeshConfigFlowManagerImplTest {
             manager.handleConfigComplete(HandshakeConstants.NODE_INFO_NONCE)
             advanceUntilIdle()
 
-            verify(VerifyMode.exactly(1)) { nodeManager.installNodeInfo(any()) }
+            verify(VerifyMode.exactly(1)) { nodeManager.installNodeInfo(any(), any()) }
             verifySuspend(VerifyMode.exactly(1)) { connectionManager.onNodeDbReady() }
             verifySuspend(VerifyMode.exactly(1)) { radioConfigRepository.clearLocalConfig() }
             verifySuspend(VerifyMode.exactly(1)) { radioConfigRepository.clearLoraRegionPresetMap() }

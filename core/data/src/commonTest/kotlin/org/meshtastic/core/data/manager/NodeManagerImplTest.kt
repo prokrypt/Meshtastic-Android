@@ -1049,6 +1049,25 @@ class NodeManagerImplTest {
     }
 
     @Test
+    fun `installNodeInfo keeps the last heard time when the radio reports none`() {
+        val nodeNum = 5678
+        nodeManager.updateNode(nodeNum) { it.copy(lastHeard = 1000) }
+
+        nodeManager.installNodeInfo(ProtoNodeInfo.Builder().also { wb -> wb.num = nodeNum }.build())
+        assertEquals(1000, nodeManager.nodeDBbyNodeNum[nodeNum]!!.lastHeard)
+
+        nodeManager.installNodeInfo(
+            ProtoNodeInfo.Builder()
+                .also { wb ->
+                    wb.num = nodeNum
+                    wb.last_heard = 2000
+                }
+                .build(),
+        )
+        assertEquals(2000, nodeManager.nodeDBbyNodeNum[nodeNum]!!.lastHeard)
+    }
+
+    @Test
     fun `installNodeInfo sets publicKey from user public_key`() {
         val nodeNum = 5678
         val pk = ByteArray(32) { (it + 1).toByte() }.toByteString()

@@ -1039,7 +1039,9 @@ class NodeManagerImpl(
         // into a session whose firmware cannot report it.
         next = next.copy(heardOnCurrentLora = !reportsHeard || info.heard_on_current_lora)
         return next.copy(
-            lastHeard = clampTimestampToNow(info.last_heard),
+            // 0 is "the radio does not know" (a node it re-created for a key push, or an untrusted clock), not
+            // "never heard": keep the time this app saw.
+            lastHeard = clampTimestampToNow(info.last_heard).takeIf { it != 0 } ?: next.lastHeard,
             deviceMetrics = info.device_metrics ?: next.deviceMetrics,
             channel = info.channel,
             viaMqtt = info.via_mqtt,

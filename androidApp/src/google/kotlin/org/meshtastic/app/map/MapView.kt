@@ -53,12 +53,14 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -126,11 +128,10 @@ import com.google.maps.android.data.renderer.model.PolygonStyle
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -138,10 +139,10 @@ import org.jetbrains.compose.resources.stringResource
 import org.koin.compose.viewmodel.koinViewModel
 import org.meshtastic.app.map.component.CLUSTER_MAX_DISTANCE_DP
 import org.meshtastic.app.map.component.CustomTileProviderManagerSheet
-import org.meshtastic.app.map.component.MIN_CLUSTER_SIZE
 import org.meshtastic.app.map.component.MapTypeDropdown
 import org.meshtastic.app.map.component.NodeClusterMarkers
 import org.meshtastic.app.map.component.WaypointMarkers
+import org.meshtastic.app.map.model.LiveMapNodes
 import org.meshtastic.app.map.model.NodeClusterItem
 import org.meshtastic.app.map.offline.pmtiles.OfflineRegionExtractor
 import org.meshtastic.app.map.offline.pmtiles.OfflineVectorOverlay
@@ -155,14 +156,12 @@ import org.meshtastic.core.common.util.ioDispatcher
 import org.meshtastic.core.common.util.nowSeconds
 import org.meshtastic.core.model.Node
 import org.meshtastic.core.model.TracerouteOverlay
-import org.meshtastic.core.model.effectiveLongName
 import org.meshtastic.core.model.geofence.toGeofence
 import org.meshtastic.core.model.hasFix
 import org.meshtastic.core.model.isLocked
 import org.meshtastic.core.model.isModifiableBy
 import org.meshtastic.core.model.util.GeoConstants.DEG_D
 import org.meshtastic.core.model.util.GeoConstants.HEADING_DEG
-import org.meshtastic.core.model.util.TimeConstants
 import org.meshtastic.core.model.util.isValidCodePoint
 import org.meshtastic.core.model.util.kmhIn
 import org.meshtastic.core.model.util.metersIn
@@ -179,7 +178,6 @@ import org.meshtastic.core.resources.latitude
 import org.meshtastic.core.resources.longitude
 import org.meshtastic.core.resources.manage_map_layers
 import org.meshtastic.core.resources.map_tile_source
-import org.meshtastic.core.resources.now
 import org.meshtastic.core.resources.position
 import org.meshtastic.core.resources.sats
 import org.meshtastic.core.resources.speed
@@ -187,7 +185,6 @@ import org.meshtastic.core.resources.speed_kmh
 import org.meshtastic.core.resources.speed_mph
 import org.meshtastic.core.resources.timestamp
 import org.meshtastic.core.resources.track_point
-import org.meshtastic.core.resources.unknown
 import org.meshtastic.core.ui.component.NodeChip
 import org.meshtastic.core.ui.icon.Layers
 import org.meshtastic.core.ui.icon.Map
@@ -204,7 +201,6 @@ import org.meshtastic.feature.coverage.RegionTerrain
 import org.meshtastic.feature.coverage.rememberCoverageEstimate
 import org.meshtastic.feature.map.BaseMapViewModel.MapFilterState
 import org.meshtastic.feature.map.MapBounds
-import org.meshtastic.feature.map.MapNodePolicy
 import org.meshtastic.feature.map.STACK_SPREAD_METERS
 import org.meshtastic.feature.map.TRACK_FADE_LEVELS
 import org.meshtastic.feature.map.TRACK_STOP_RADIUS_METERS
@@ -234,7 +230,6 @@ import org.meshtastic.feature.map.layers.MapLayerItem
 import org.meshtastic.feature.map.layers.opacityOf
 import org.meshtastic.feature.map.layers.toPickedMapFile
 import org.meshtastic.feature.map.mergeStationaryRuns
-import org.meshtastic.feature.map.stackCoincident
 import org.meshtastic.feature.map.terrain.GeoBounds
 import org.meshtastic.feature.map.terrain.MapterhornEndpoints
 import org.meshtastic.feature.map.tiles.mapAttributionText
@@ -484,12 +479,15 @@ fun MapView(
         if (mode is GoogleMapMode.Main) mapViewModel.cameraPositionState else rememberCameraPositionState()
     val cameraInitialization by mapViewModel.cameraInitialization.collectAsStateWithLifecycle()
     var isMapLoaded by remember { mutableStateOf(false) }
+    // Set once the map's content composes, which is when the camera state is given its map and so its projection.
+    var isMapAttached by remember { mutableStateOf(false) }
 
     if (mode is GoogleMapMode.Main) {
-        LaunchedEffect(cameraPositionState.isMoving, cameraInitialization) {
-            if (!cameraPositionState.isMoving && cameraInitialization == CameraInitialization.Restored) {
-                mapViewModel.saveCameraPosition(cameraPositionState.position)
-            }
+        LaunchedEffect(cameraPositionState, cameraInitialization) {
+            if (cameraInitialization != CameraInitialization.Restored) return@LaunchedEffect
+            // Watched from the effect: read in the body, every gesture's start and end would recompose the screen.
+            snapshotFlow { cameraPositionState.isMoving }
+                .collect { isMoving -> if (!isMoving) mapViewModel.saveCameraPosition(cameraPositionState.position) }
         }
     }
 
@@ -548,52 +546,36 @@ fun MapView(
     }
 
     // --- Node & waypoint data ---
-    val allNodes by mapViewModel.nodesWithPosition.collectAsStateWithLifecycle(listOf())
+    // The nodes themselves are not collected here. MapViewModel.nodeMarkers filters and groups them off the main
+    // thread and the marker layer collects the result, so neither a packet nor a camera frame recomposes this screen.
     val waypoints by mapViewModel.waypoints.collectAsStateWithLifecycle(emptyMap())
-    val displayableWaypoints = waypoints.values.mapNotNull { it.waypoint }
+    val displayableWaypoints = remember(waypoints) { waypoints.values.mapNotNull { it.waypoint } }
     val selectedWaypointId by mapViewModel.selectedWaypointId.collectAsStateWithLifecycle()
-
-    val filteredNodes = MapNodePolicy.visibleNodes(allNodes, mapFilterState, nowSeconds, ourNodeInfo?.num)
 
     val density = LocalDensity.current
     val layoutDirection = LocalLayoutDirection.current
     var mapSize by remember { mutableStateOf(IntSize.Zero) }
-    LaunchedEffect(mode, cameraInitialization, isMapLoaded, filteredNodes, mapSize) {
+    LaunchedEffect(mode, cameraInitialization, isMapLoaded, mapSize) {
         // The fit is sized to the map, so it waits for the first layout.
         if (mapSize == IntSize.Zero) return@LaunchedEffect
-        if (
-            mode is GoogleMapMode.Main &&
-            cameraInitialization == CameraInitialization.FitNodes &&
-            isMapLoaded &&
-            filteredNodes.isNotEmpty()
-        ) {
-            val points = filteredNodes.map { it.position.toLatLng() }
+        if (mode is GoogleMapMode.Main && cameraInitialization == CameraInitialization.FitNodes && isMapLoaded) {
+            // Waits here for the first node the filters let through, as the effect's key used to.
+            val visibleNodes = mapViewModel.nodeMarkers.first { it.nodes.isNotEmpty() }.nodes.values.toList()
+            val points = visibleNodes.map { it.position.toLatLng() }
             if (points.size == 1) {
                 cameraPositionState.move(CameraUpdateFactory.newLatLngZoom(points.first(), 12f))
             } else {
                 // Shared with the MapLibre map, which pads a degenerate box rather than handing the camera
                 // something it cannot fit to.
-                val bounds = MapBounds.aroundNodes(filteredNodes)?.toLatLngBounds() ?: return@LaunchedEffect
+                val bounds = MapBounds.aroundNodes(visibleNodes)?.toLatLngBounds() ?: return@LaunchedEffect
                 cameraPositionState.frameInsideChrome(bounds, mapSize, density, layoutDirection)
             }
             mapViewModel.onInitialNodeBoundsApplied()
         }
     }
 
-    val myNodeNum = mapViewModel.myNodeNum
-    val relativeTimeBucket = rememberRelativeTimeBucket()
-    val nodeClusterItems =
-        rememberNodeClusterItems(
-            nodes = if (mode is GoogleMapMode.Main) filteredNodes else emptyList(),
-            myNodeNum = myNodeNum,
-            relativeTimeBucket = relativeTimeBucket,
-            // Whole zoom levels and degrees, so a pinch or pan only regroups when the merge distance really changes.
-            spreadMeters =
-            mergeSpreadMeters(
-                zoom = cameraPositionState.position.zoom.toInt(),
-                latitude = cameraPositionState.position.target.latitude.roundToInt().toDouble(),
-            ),
-        )
+    // Collected rather than read off the view model: nothing else recomposes this screen when our node is learned.
+    val myNodeNum = mapViewModel.myNodeInfo.collectAsStateWithLifecycle().value?.myNodeNum
     val isConnected by mapViewModel.isConnected.collectAsStateWithLifecycle()
     val theme by mapViewModel.theme.collectAsStateWithLifecycle()
     val dark =
@@ -619,13 +601,12 @@ fun MapView(
             emptyList()
         }
 
-    // Traceroute: resolve node selection + polylines. Collected unconditionally per Compose rules
-    // (composable calls cannot be conditional), but only consumed in Traceroute mode. Uses all
-    // nodes, not just those with positions, so getNodeOrFallback can resolve metadata for hops
-    // whose positions come from snapshots.
-    val allNodesForTraceroute by mapViewModel.nodes.collectAsStateWithLifecycle(listOf())
+    // Traceroute: resolve node selection + polylines. Uses all nodes, not just those with positions, so
+    // getNodeOrFallback can resolve metadata for hops whose positions come from snapshots. Collected in this mode
+    // only: on the main map and the track map nothing reads the list, and every packet would rebuild it.
     val tracerouteSelection =
         if (mode is GoogleMapMode.Traceroute) {
+            val allNodesForTraceroute by mapViewModel.nodes.collectAsStateWithLifecycle(listOf())
             remember(mode.overlay, mode.nodePositions, allNodesForTraceroute) {
                 mapViewModel.tracerouteNodeSelection(
                     tracerouteOverlay = mode.overlay,
@@ -752,7 +733,30 @@ fun MapView(
 
     val effectiveGoogleMapType = if (currentRasterBasemap != null) MapType.NONE else selectedGoogleMapType
 
-    var showClusterItemsDialog by remember { mutableStateOf<List<NodeClusterItem>?>(null) }
+    var clusterMembers by remember { mutableStateOf<List<ClusterMemberEntry>?>(null) }
+
+    // The downloaded region (if any) covering what's on screen. Derived, so the screen recomposes when the answer
+    // changes rather than for every camera frame, and the projection is left alone while nothing is downloaded.
+    val offlineRegions by mapViewModel.offlineRegions.collectAsStateWithLifecycle()
+    val regionInView by
+        remember(cameraPositionState) {
+            derivedStateOf {
+                if (offlineRegions.isEmpty()) {
+                    null
+                } else {
+                    // Read for the subscription. The projection is not snapshot state; what it follows is: the camera,
+                    // the map's size, and the map coming up. These are prompts to look again and never gates: a map
+                    // with no connection may never report that it loaded.
+                    cameraPositionState.position
+                    mapSize
+                    isMapAttached
+                    isMapLoaded
+                    cameraPositionState.projection?.visibleRegion?.latLngBounds?.let {
+                        mapViewModel.offlineRegionCovering(it)
+                    }
+                }
+            }
+        }
 
     KeepScreenOn(isLocationTrackingEnabled && locationPermission.isGranted)
 
@@ -817,6 +821,8 @@ fun MapView(
                 }
             },
         ) {
+            LaunchedEffect(Unit) { isMapAttached = true }
+
             // The raster basemap, when one is selected instead of a Google map type (all modes).
             key(currentRasterBasemap) {
                 currentRasterBasemap?.let { basemap ->
@@ -828,8 +834,7 @@ fun MapView(
 
             // The downloaded region (if any) covering what's on screen — shared by the offline vector overlay and
             // offline terrain below, each gated by its own toggle rather than each other's.
-            val visibleBounds = cameraPositionState.projection?.visibleRegion?.latLngBounds
-            val coveringRegion = visibleBounds?.let { mapViewModel.offlineRegionCovering(it) }
+            val coveringRegion = regionInView
 
             // The offline vector overlay, drawn only while the user has switched it on and a downloaded region
             // actually covers what's on screen — see MapViewModel.offlineOverlayEnabled/offlineRegionCovering.
@@ -908,7 +913,8 @@ fun MapView(
             when (mode) {
                 is GoogleMapMode.Main ->
                     MainMapContent(
-                        nodeClusterItems = nodeClusterItems,
+                        nodeMarkers = mapViewModel.nodeMarkers,
+                        liveNodes = mapViewModel.liveMapNodes,
                         mapFilterState = mapFilterState,
                         navigateToNodeDetails = navigateToNodeDetails,
                         displayableWaypoints = displayableWaypoints,
@@ -922,7 +928,9 @@ fun MapView(
                         mapViewModel = mapViewModel,
                         cameraPositionState = cameraPositionState,
                         coroutineScope = coroutineScope,
-                        onShowClusterItemsDialog = { showClusterItemsDialog = it },
+                        onShowNodes = { nodeNums ->
+                            clusterMembers = mapViewModel.liveMapNodes.memberEntries(nodeNums)
+                        },
                     )
 
                 is GoogleMapMode.NodeTrack -> {
@@ -1104,11 +1112,8 @@ fun MapView(
         // sheet, which is exactly the gap this mirrors from the sibling iOS app's own terrain layer. The offline
         // terrain layer's own credit (Mapterhorn) is folded in the same way, whenever hillshade or contours are
         // actually rendering, or a coverage estimate built from that terrain is shown.
-        val attributionCoveringRegion =
-            cameraPositionState.projection?.visibleRegion?.latLngBounds?.let { mapViewModel.offlineRegionCovering(it) }
-        val offlineRegionActive = offlineOverlayEnabled && attributionCoveringRegion != null
-        val terrainDrawn =
-            attributionCoveringRegion?.hasTerrain == true && (terrainHillshadeEnabled || terrainContoursEnabled)
+        val offlineRegionActive = offlineOverlayEnabled && regionInView != null
+        val terrainDrawn = regionInView?.hasTerrain == true && (terrainHillshadeEnabled || terrainContoursEnabled)
         val coverageShown = mapLayers.any { it.layerType == LayerType.COVERAGE && it.isVisible }
         val terrainActive = terrainDrawn || coverageShown
         val attributionText =
@@ -1141,94 +1146,97 @@ fun MapView(
             )
         }
 
-        MapControlsOverlay(
-            modifier = Modifier.align(Alignment.TopCenter).padding(top = 8.dp),
-            onToggleFilterMenu = { mapFilterMenuExpanded = true },
-            filtersActive = mode !is GoogleMapMode.NodeTrack && mapFilterState.isNarrowing,
-            filterDropdownContent = {
-                if (mode is GoogleMapMode.NodeTrack) {
-                    NodeTrackFilterMenu(
-                        expanded = mapFilterMenuExpanded,
-                        onDismissRequest = { mapFilterMenuExpanded = false },
-                        selected = mapFilterState.lastHeardTrackFilter,
-                        onSelect = mapViewModel::setLastHeardTrackFilter,
-                    )
-                } else if (mapFilterMenuExpanded) {
-                    MapFilterSheet(
-                        onDismissRequest = { mapFilterMenuExpanded = false },
-                        filterState = mapFilterState,
-                        actions = mapViewModel.mapFilterActions(),
-                    )
-                }
-            },
-            mapTypeContent = {
-                Box {
+        // The compass is the one control that follows the camera, so the overlay alone recomposes as the map turns.
+        CameraBearing(cameraPositionState) { bearing ->
+            MapControlsOverlay(
+                modifier = Modifier.align(Alignment.TopCenter).padding(top = 8.dp),
+                onToggleFilterMenu = { mapFilterMenuExpanded = true },
+                filtersActive = mode !is GoogleMapMode.NodeTrack && mapFilterState.isNarrowing,
+                filterDropdownContent = {
+                    if (mode is GoogleMapMode.NodeTrack) {
+                        NodeTrackFilterMenu(
+                            expanded = mapFilterMenuExpanded,
+                            onDismissRequest = { mapFilterMenuExpanded = false },
+                            selected = mapFilterState.lastHeardTrackFilter,
+                            onSelect = mapViewModel::setLastHeardTrackFilter,
+                        )
+                    } else if (mapFilterMenuExpanded) {
+                        MapFilterSheet(
+                            onDismissRequest = { mapFilterMenuExpanded = false },
+                            filterState = mapFilterState,
+                            actions = mapViewModel.mapFilterActions(),
+                        )
+                    }
+                },
+                mapTypeContent = {
+                    Box {
+                        MapButton(
+                            icon = MeshtasticIcons.Map,
+                            contentDescription = stringResource(Res.string.map_tile_source),
+                            onClick = { mapTypeMenuExpanded = true },
+                        )
+                        MapTypeDropdown(
+                            expanded = mapTypeMenuExpanded,
+                            onDismissRequest = { mapTypeMenuExpanded = false },
+                            mapViewModel = mapViewModel,
+                            onManageCustomTileProvidersClick = {
+                                mapTypeMenuExpanded = false
+                                showCustomTileManagerSheet = true
+                            },
+                        )
+                    }
+                },
+                layersContent = {
                     MapButton(
-                        icon = MeshtasticIcons.Map,
-                        contentDescription = stringResource(Res.string.map_tile_source),
-                        onClick = { mapTypeMenuExpanded = true },
+                        icon = MeshtasticIcons.Layers,
+                        contentDescription = stringResource(Res.string.manage_map_layers),
+                        onClick = { showLayersBottomSheet = true },
                     )
-                    MapTypeDropdown(
-                        expanded = mapTypeMenuExpanded,
-                        onDismissRequest = { mapTypeMenuExpanded = false },
-                        mapViewModel = mapViewModel,
-                        onManageCustomTileProvidersClick = {
-                            mapTypeMenuExpanded = false
-                            showCustomTileManagerSheet = true
-                        },
-                    )
-                }
-            },
-            layersContent = {
-                MapButton(
-                    icon = MeshtasticIcons.Layers,
-                    contentDescription = stringResource(Res.string.manage_map_layers),
-                    onClick = { showLayersBottomSheet = true },
-                )
-            },
-            // Hands params to the hosted Site Planner and imports the returned coverage.
-            onSitePlannerClick = {
-                sitePlannerLaunch = SitePlannerLaunch(initialParams = ourNodeInfo.toSitePlannerParams(channelSet))
-            },
-            isLocationTrackingEnabled = isLocationTrackingEnabled,
-            onToggleLocationTracking = {
-                when {
-                    locationPermission.isGranted -> {
-                        isLocationTrackingEnabled = !isLocationTrackingEnabled
-                        if (!isLocationTrackingEnabled) {
-                            followPhoneBearing = false
+                },
+                // Hands params to the hosted Site Planner and imports the returned coverage.
+                onSitePlannerClick = {
+                    sitePlannerLaunch = SitePlannerLaunch(initialParams = ourNodeInfo.toSitePlannerParams(channelSet))
+                },
+                isLocationTrackingEnabled = isLocationTrackingEnabled,
+                onToggleLocationTracking = {
+                    when {
+                        locationPermission.isGranted -> {
+                            isLocationTrackingEnabled = !isLocationTrackingEnabled
+                            if (!isLocationTrackingEnabled) {
+                                followPhoneBearing = false
+                            }
+                        }
+
+                        // Permanently denied: the system won't prompt again, so send the user to settings to recover.
+                        locationPermission.status == PermissionStatus.PERMANENTLY_DENIED ->
+                            locationPermission.openAppSettings()
+
+                        else -> {
+                            triggerLocationToggleAfterPermission = true
+                            locationPermission.request()
                         }
                     }
-
-                    // Permanently denied: the system won't prompt again, so send the user to settings to recover.
-                    locationPermission.status == PermissionStatus.PERMANENTLY_DENIED ->
-                        locationPermission.openAppSettings()
-
-                    else -> {
-                        triggerLocationToggleAfterPermission = true
-                        locationPermission.request()
-                    }
-                }
-            },
-            bearing = cameraPositionState.position.bearing,
-            onCompassClick = {
-                if (isLocationTrackingEnabled) {
-                    followPhoneBearing = !followPhoneBearing
-                } else {
-                    coroutineScope.launch {
-                        cameraPositionState.animateOrLog("orienting map to north") {
-                            val newCameraPosition =
-                                CameraPosition.Builder(cameraPositionState.position).bearing(0f).build()
-                            CameraUpdateFactory.newCameraPosition(newCameraPosition)
+                },
+                bearing = bearing,
+                onCompassClick = {
+                    if (isLocationTrackingEnabled) {
+                        followPhoneBearing = !followPhoneBearing
+                    } else {
+                        coroutineScope.launch {
+                            cameraPositionState.animateOrLog("orienting map to north") {
+                                val newCameraPosition =
+                                    CameraPosition.Builder(cameraPositionState.position).bearing(0f).build()
+                                CameraUpdateFactory.newCameraPosition(newCameraPosition)
+                            }
                         }
                     }
-                }
-            },
-            followPhoneBearing = followPhoneBearing,
-            showRefresh = showRefresh,
-            isRefreshing = isRefreshingLayers,
-            onRefresh = { mapViewModel.refreshAllVisibleNetworkLayers() },
-        )
+                },
+                followPhoneBearing = followPhoneBearing,
+                showRefresh = showRefresh,
+                isRefreshing = isRefreshingLayers,
+                onRefresh = { mapViewModel.refreshAllVisibleNetworkLayers() },
+            )
+        }
     }
 
     // --- Bottom sheets & dialogs ---
@@ -1243,7 +1251,6 @@ fun MapView(
             // One scroll container for the whole sheet: the offline region list grows with every saved region, and
             // the layer toggles below it must stay reachable.
             Column(modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
-                val offlineRegions by mapViewModel.offlineRegions.collectAsStateWithLifecycle()
                 val offlineDownloadState by mapViewModel.offlineDownloadState.collectAsStateWithLifecycle()
                 val terrainDownloadState by mapViewModel.terrainDownloadState.collectAsStateWithLifecycle()
                 val terrainDownloadRegionId by mapViewModel.terrainDownloadRegionId.collectAsStateWithLifecycle()
@@ -1316,7 +1323,6 @@ fun MapView(
         // Route launches retain the selected node; manual map launches continue following our connected node.
         val onUseNodeLocation: (() -> Pair<Double, Double>)? =
             launch.nodeLocation(ourNodeInfo)?.let { location -> { location } }
-        val offlineRegions by mapViewModel.offlineRegions.collectAsStateWithLifecycle()
         val offlineTerrain =
             remember(offlineRegions) {
                 offlineRegions
@@ -1346,24 +1352,14 @@ fun MapView(
             onUseMapCenter = { cameraPositionState.position.target.let { it.latitude to it.longitude } },
         )
     }
-    showClusterItemsDialog?.let { items ->
+    clusterMembers?.let { members ->
         ClusterMembersDialog(
-            members =
-            items
-                .flatMap { it.stackMembers.ifEmpty { listOf(it) } }
-                .map {
-                    ClusterMemberEntry(
-                        nodeNum = it.node.num,
-                        title = it.nodeTitle,
-                        subtitle = it.nodeSnippet,
-                        node = it.node,
-                    )
-                },
+            members = members,
             onMemberClick = { nodeNum ->
                 navigateToNodeDetails(nodeNum)
-                showClusterItemsDialog = null
+                clusterMembers = null
             },
-            onDismissRequest = { showClusterItemsDialog = null },
+            onDismissRequest = { clusterMembers = null },
         )
     }
     if (showCustomTileManagerSheet) {
@@ -1373,58 +1369,17 @@ fun MapView(
     }
 }
 
+/** Recomposes [content] alone when the map turns, where reading the camera in [MapView] recomposed all of it. */
 @Composable
-private fun rememberRelativeTimeBucket(): Long {
-    val buckets = remember { relativeTimeBuckets() }
-    return buckets.collectAsStateWithLifecycle(initialValue = nowSeconds / TimeConstants.SECONDS_PER_MINUTE).value
+private fun CameraBearing(cameraPositionState: CameraPositionState, content: @Composable (bearing: Float) -> Unit) {
+    val bearing by remember(cameraPositionState) { derivedStateOf { cameraPositionState.position.bearing } }
+    content(bearing)
 }
 
-internal fun relativeTimeBuckets(now: () -> Long = { nowSeconds }): Flow<Long> = flow {
-    while (true) {
-        val currentSeconds = now()
-        emit(currentSeconds / TimeConstants.SECONDS_PER_MINUTE)
-        val secondsUntilNextMinute =
-            TimeConstants.SECONDS_PER_MINUTE - currentSeconds.mod(TimeConstants.SECONDS_PER_MINUTE)
-        delay(secondsUntilNextMinute * TimeConstants.MS_PER_SEC)
-    }
-}
-
-/**
- * Materializes the native clustering model used by the Google map.
- *
- * Camera state invalidates [MapView] on every movement frame, and its filters produce a new-but-equal [List] each time.
- * Using that structural value as a key avoids rebuilding every [NodeClusterItem] (and its strings/[LatLng]) for
- * camera-only changes. [relativeTimeBucket] deliberately refreshes the relative marker titles once per minute.
- */
-@Composable
-internal fun rememberNodeClusterItems(
-    nodes: List<Node>,
-    myNodeNum: Int?,
-    relativeTimeBucket: Long,
-    spreadMeters: Double = STACK_SPREAD_METERS,
-): List<NodeClusterItem> {
-    val unknownText = stringResource(Res.string.unknown)
-    val nowText = stringResource(Res.string.now)
-    return remember(nodes, myNodeNum, relativeTimeBucket, unknownText, nowText, spreadMeters) {
-        fun itemFor(node: Node): NodeClusterItem {
-            val latLng = LatLng((node.position.latitude_i ?: 0) * DEG_D, (node.position.longitude_i ?: 0) * DEG_D)
-            return NodeClusterItem(
-                node = node,
-                nodePosition = latLng,
-                nodeTitle = "${node.user.short_name} ${formatAgo(node.position.time, unknownText, nowText)}",
-                nodeSnippet = node.effectiveLongName,
-                myNodeNum = myNodeNum,
-            )
-        }
-        stackCoincident(nodes, myNodeNum, spreadMeters)
-            .flatMap { merged ->
-                // Bubbles win: a group big enough to bubble stays as its close stacks, for the clustering to gather.
-                if (merged.count >= MIN_CLUSTER_SIZE) stackCoincident(merged.members, myNodeNum) else listOf(merged)
-            }
-            .map { stack ->
-                val members = if (stack.count > 1) stack.members.map(::itemFor) else emptyList()
-                itemFor(stack.top).copy(stackMembers = members)
-            }
+/** The rows the nodes-at-this-location dialog lists for [nodeNums], as the nodes are when it opens. */
+private fun LiveMapNodes.memberEntries(nodeNums: List<Int>): List<ClusterMemberEntry> = nodeNums.mapNotNull { num ->
+    node(num)?.let { node ->
+        ClusterMemberEntry(nodeNum = num, title = title(num).orEmpty(), subtitle = snippet(num).orEmpty(), node = node)
     }
 }
 
@@ -1434,7 +1389,8 @@ internal fun rememberNodeClusterItems(
 @OptIn(MapsComposeExperimentalApi::class)
 @Composable
 private fun MainMapContent(
-    nodeClusterItems: List<NodeClusterItem>,
+    nodeMarkers: StateFlow<NodeMarkerSet>,
+    liveNodes: LiveMapNodes,
     mapFilterState: MapFilterState,
     navigateToNodeDetails: (Int) -> Unit,
     displayableWaypoints: List<Waypoint>,
@@ -1448,7 +1404,7 @@ private fun MainMapContent(
     mapViewModel: MapViewModel,
     cameraPositionState: CameraPositionState,
     coroutineScope: CoroutineScope,
-    onShowClusterItemsDialog: (List<NodeClusterItem>?) -> Unit,
+    onShowNodes: (nodeNums: List<Int>) -> Unit,
 ) {
     val clusterFitPaddingPx = with(LocalDensity.current) { CLUSTER_FIT_PADDING.roundToPx() }
 
@@ -1456,7 +1412,7 @@ private fun MainMapContent(
     fun openGroup(items: List<NodeClusterItem>, splitDistanceDp: Int) {
         val splitZoom = clusterSplitZoom(items.map { it.position }, splitDistanceDp)
         if (splitZoom == null) {
-            onShowClusterItemsDialog(items)
+            onShowNodes(items.flatMap { it.stackMemberNums.ifEmpty { listOf(it.nodeNum) } })
             return
         }
         val bounds = LatLngBounds.builder()
@@ -1476,11 +1432,16 @@ private fun MainMapContent(
         }
     }
     NodeClusterMarkers(
-        nodeClusterItems = nodeClusterItems,
-        mapFilterState = mapFilterState,
+        nodeMarkers = nodeMarkers,
+        liveNodes = liveNodes,
+        showPrecisionCircle = mapFilterState.showPrecisionCircle,
+        // Unknown until the map has a projection, and then a chip pulses as it always did.
+        isOnScreen = { position ->
+            cameraPositionState.projection?.visibleRegion?.latLngBounds?.contains(position) ?: true
+        },
         navigateToNodeDetails = navigateToNodeDetails,
         // A merged chip lists its nodes and leaves the camera alone; only cluster bubbles zoom.
-        onStackClick = { onShowClusterItemsDialog(it) },
+        onStackClick = onShowNodes,
         onClusterClick = { cluster ->
             openGroup(cluster.items.toList(), CLUSTER_MAX_DISTANCE_DP)
             true

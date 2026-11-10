@@ -139,7 +139,8 @@ class MeshConfigHandlerImpl(
             launchPersistenceForSession(session, "channel persist") {
                 if (channel.role == Channel.Role.PRIMARY) {
                     val settings = channel.settings
-                    recordNodeSyncConfig("primary", "${settings?.name}/${settings?.psk?.hex()}")
+                    // Hashed: the stored fingerprint must not hold the key itself.
+                    recordNodeSyncConfig("primary", "${settings?.name}/${settings?.psk?.sha256()?.hex()}")
                 }
                 radioConfigRepository.updateChannelSettings(channel)
             }

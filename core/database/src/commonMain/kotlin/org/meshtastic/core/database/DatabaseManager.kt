@@ -76,6 +76,7 @@ import org.meshtastic.core.common.util.normalizeAddress
 import org.meshtastic.core.common.util.nowMillis
 import org.meshtastic.core.database.di.DatabaseDataStore
 import org.meshtastic.core.di.CoroutineDispatchers
+import org.meshtastic.core.model.InterfaceId
 import kotlin.concurrent.Volatile
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
@@ -947,7 +948,19 @@ open class DatabaseManager(private val datastore: DatabaseDataStore, private val
                 val deviceKey = validDeviceIdOrNull(deviceId)?.let(::deviceDbPrefKey)
                 val nodeKey = nodeDbPrefKey(nodeNum)
                 val prefs = datastore.data.first()
-                val claimed = resolveDbClaim(prefs, deviceKey, nodeKey)
+                val ownClaim = resolveDbClaim(prefs, deviceKey, nodeKey)
+                // A USB bus path or a TCP host can pass to another radio, which then opens the previous radio's DB by
+                // address (a BLE address cannot). Never claim that DB or merge it away: move this radio to its own DB
+                // (a new one when it has none) and point the address at it.
+                // shortcut: needs a device id from both radios, add another proof if lockdown/ESP32 radios collide.
+                val reusableAddress =
+                    address.startsWith(InterfaceId.SERIAL.id) || address.startsWith(InterfaceId.TCP.id)
+                val foreign =
+                    deviceKey != null &&
+                        reusableAddress &&
+                        ownClaim != sourceName &&
+                        isClaimedByAnotherDevice(prefs, deviceKey, sourceName)
+                val claimed = if (foreign) ownClaim ?: buildDbName("$address/$deviceId") else ownClaim
                 suspend fun writeClaims(dbName: String) = datastore.edit {
                     ensureAssociationActive()
                     deviceKey?.let { key -> it[key] = dbName }
@@ -995,6 +1008,7 @@ open class DatabaseManager(private val datastore: DatabaseDataStore, private val
                     else -> {
                         // Secondary transport reached an already-known node: fold this DB into the canonical one,
                         // switch the active DB to it, alias this address to it, and retire the now-merged source.
+                        // A foreign source (see above) is left as it is: nothing is merged or retired.
                         ensureAssociationActive()
                         val source = _currentDb.value
                         val dest = withContext(dispatchers.io) { getOrOpenDatabase(claimed) }
@@ -1065,13 +1079,15 @@ open class DatabaseManager(private val datastore: DatabaseDataStore, private val
                                 // fails after the merge commits, a later switch verifies the marker and repairs the
                                 // alias before publishing.
                                 withContext(NonCancellable + dispatchers.io) {
-                                    datastore.edit {
-                                        ensureAssociationActive()
-                                        it[pendingSourceDbKey(transportAddress)] = sourceName
-                                        it[pendingDestinationDbKey(transportAddress)] = claimed
-                                        ensureAssociationActive()
+                                    if (!foreign) {
+                                        datastore.edit {
+                                            ensureAssociationActive()
+                                            it[pendingSourceDbKey(transportAddress)] = sourceName
+                                            it[pendingDestinationDbKey(transportAddress)] = claimed
+                                            ensureAssociationActive()
+                                        }
+                                        mergeDatabases(source, dest, sourceName, isSessionActive)
                                     }
-                                    mergeDatabases(source, dest, sourceName, isSessionActive)
                                     mergeCommitted = true
                                     ensureAssociationActive()
                                     datastore.edit {
@@ -1082,14 +1098,16 @@ open class DatabaseManager(private val datastore: DatabaseDataStore, private val
                                         it.remove(pendingSourceDbKey(transportAddress))
                                         it.remove(pendingDestinationDbKey(transportAddress))
                                         it[lastUsedKey(claimed)] = nowMillis
-                                        it[retiredDbNamesKey] = it[retiredDbNamesKey].orEmpty() + sourceName
+                                        if (!foreign) {
+                                            it[retiredDbNamesKey] = it[retiredDbNamesKey].orEmpty() + sourceName
+                                        }
                                         ensureAssociationActive()
                                     }
                                     retirementPersisted = true
                                     Logger.i {
-                                        "Unified ${anonymizeDbName(
-                                            sourceName,
-                                        )} into ${anonymizeDbName(claimed)} for node $nodeNum"
+                                        val what = if (foreign) "Left another radio's" else "Unified"
+                                        "$what ${anonymizeDbName(sourceName)} for ${anonymizeDbName(claimed)}, " +
+                                            "node $nodeNum"
                                     }
                                 }
                                 currentCoroutineContext().ensureActive()
@@ -1126,7 +1144,9 @@ open class DatabaseManager(private val datastore: DatabaseDataStore, private val
                                 if (mergeCommitted) {
                                     releaseWriterGate(dest, claimed)
                                     switched = true
-                                    recordLogicalRetirement(sourceName, persistIntent = !retirementPersisted)
+                                    if (!foreign) {
+                                        recordLogicalRetirement(sourceName, persistIntent = !retirementPersisted)
+                                    }
                                 } else {
                                     releaseWriterGate(source, sourceName)
                                 }

@@ -35,6 +35,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
+import okio.ByteString
+import okio.ByteString.Companion.encodeUtf8
 import org.meshtastic.core.common.di.asServiceScope
 import org.meshtastic.core.model.MyNodeInfo
 import org.meshtastic.core.model.heardSlot
@@ -428,13 +430,35 @@ class MeshConfigHandlerImplTest {
             assertEquals(1_800_000_000L, meshPrefs.nodeSyncs[OTHER_NODE_NUM], "another radio's record is its own")
         }
 
-    private fun primaryChannel(name: String) = Channel.Builder()
+    private fun primaryChannel(name: String, psk: ByteString = ByteString.EMPTY) = Channel.Builder()
         .also { wb ->
             wb.index = 0
             wb.role = Channel.Role.PRIMARY
-            wb.settings = ChannelSettings.Builder().also { it.name = name }.build()
+            wb.settings =
+                ChannelSettings.Builder()
+                    .also {
+                        it.name = name
+                        it.psk = psk
+                    }
+                    .build()
         }
         .build()
+
+    @Test
+    fun `handleChannel notices a new primary key without storing the key`() = runTest(testDispatcher) {
+        handler = createHandler(backgroundScope)
+        channelSetFlow.value = ChannelSet.Builder().build()
+        val key = "0123456789abcdef".encodeUtf8()
+
+        handler.handleChannel(primaryChannel("Mesh", key), session)
+        advanceUntilIdle()
+        assertEquals(1_800_000_000L, meshPrefs.nodeSyncs[MY_NODE_NUM])
+        assertFalse(key.hex() in meshPrefs.nodeSyncConfigs.getValue(MY_NODE_NUM to "primary"))
+
+        handler.handleChannel(primaryChannel("Mesh", "fedcba9876543210".encodeUtf8()), session)
+        advanceUntilIdle()
+        assertEquals(0L, meshPrefs.nodeSyncs[MY_NODE_NUM])
+    }
 
     @Test
     fun `handleChannel forgets the node sync when this radio's primary channel was renamed`() =

@@ -210,6 +210,9 @@ open class MeshLogRepositoryImpl(
      * connect, or the radio's debug log stream) share one transaction instead of each taking its own. A lone row is
      * written at once, as before, so nothing waits in memory for a timer.
      */
+    override val isLoggingEnabled: Boolean
+        get() = meshLogPrefs.loggingEnabled.value
+
     override suspend fun insert(log: MeshLog) = withContext(dispatchers.io) {
         if (!meshLogPrefs.loggingEnabled.value) return@withContext
         val pending = PendingLog(log.asEntity())

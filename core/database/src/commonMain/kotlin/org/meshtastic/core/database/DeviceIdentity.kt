@@ -32,8 +32,9 @@ private val HEX_DEVICE_ID = Regex("[0-9a-fA-F]{16,64}")
  * by all hardware (e.g. classic ESP32) and deliberately zeroed for unauthenticated clients in lockdown mode, so callers
  * must always tolerate null.
  */
-internal fun validDeviceIdOrNull(id: String?): String? =
-    id?.takeIf { it != MyNodeEntity.DEVICE_ID_UNKNOWN && it.matches(HEX_DEVICE_ID) }
+internal fun validDeviceIdOrNull(id: String?): String? = id?.takeIf {
+    it != MyNodeEntity.DEVICE_ID_UNKNOWN && it.matches(HEX_DEVICE_ID)
+}
 
 /** Datastore key mapping a node number to its canonical DB. Legacy: node numbers renumber under firmware 2.8. */
 internal fun nodeDbPrefKey(nodeNum: Int): Preferences.Key<String> =
@@ -55,3 +56,9 @@ internal fun resolveDbClaim(
     deviceKey: Preferences.Key<String>?,
     nodeKey: Preferences.Key<String>,
 ): String? = deviceKey?.let { prefs[it] } ?: prefs[nodeKey]
+
+/** True when a device id other than [deviceKey]'s holds the claim on [dbName], so that DB is another radio's. */
+internal fun isClaimedByAnotherDevice(prefs: Preferences, deviceKey: Preferences.Key<String>, dbName: String): Boolean =
+    prefs.asMap().any { (key, value) ->
+        key != deviceKey && key.name.startsWith(DatabaseConstants.DEVICE_DB_FOR_PREFIX) && value == dbName
+    }

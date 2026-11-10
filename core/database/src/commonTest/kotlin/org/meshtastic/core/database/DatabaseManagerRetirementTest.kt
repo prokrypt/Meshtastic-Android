@@ -26,6 +26,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -136,5 +137,35 @@ class DatabaseManagerRetirementTest : DatabaseManagerTestFixture() {
         assertEquals(1, manager.closedDatabases.count { it === retiredSource })
         assertEquals(1, manager.deletedDatabaseNames.count { it == retiredName })
         assertTrue(retiredName !in armableDs.data.first()[retiredDbNamesKey].orEmpty())
+    }
+
+    @Test
+    fun radioOnAnotherRadiosUsbAddressGetsItsOwnDatabase() = runTest(testDispatcher) {
+        val usb = "s/dev/bus/usb/001/002"
+        val nameA = buildDbName(usb)
+        manager.switchActiveDatabase(usb)
+        manager.associateCurrentDevice(nodeNum = 123, deviceId = "deadbeefdeadbeef")
+        val dbA = manager.currentDb.value
+
+        // After a phone reboot the same bus path is another radio, which opens radio A's DB by address.
+        manager.associateCurrentDevice(nodeNum = 456, deviceId = "feedfacefeedface")
+        val dbB = manager.currentDb.value
+        assertTrue(dbB !== dbA, "the second radio must not stay on the first radio's DB")
+        var prefs = armableDs.data.first()
+        val nameB = assertNotNull(prefs[deviceDbPrefKey("feedfacefeedface")])
+        assertEquals(nameA, prefs[deviceDbPrefKey("deadbeefdeadbeef")], "radio A keeps its claim")
+        assertFalse(dbB.mergeMarkerDao().isMerged(nameA), "radio A's DB must not be merged into radio B's")
+
+        // Radio A back on that path opens B's DB by address, then returns to its own.
+        manager.switchActiveDatabase(null)
+        manager.switchActiveDatabase(usb)
+        assertEquals(dbB, manager.currentDb.value)
+        manager.associateCurrentDevice(nodeNum = 123, deviceId = "deadbeefdeadbeef")
+        assertEquals(dbA, manager.currentDb.value)
+        prefs = armableDs.data.first()
+        assertEquals(nameB, prefs[deviceDbPrefKey("feedfacefeedface")], "radio B keeps its claim")
+        assertFalse(dbA.mergeMarkerDao().isMerged(nameB), "radio B's DB must not be merged into radio A's")
+        assertTrue(prefs[retiredDbNamesKey].orEmpty().isEmpty(), "neither radio's DB is retired")
+        assertTrue(manager.deletedDatabaseNames.isEmpty())
     }
 }

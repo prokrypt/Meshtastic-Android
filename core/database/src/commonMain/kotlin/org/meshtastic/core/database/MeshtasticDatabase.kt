@@ -159,7 +159,8 @@ import org.meshtastic.core.database.entity.TracerouteNodePositionEntity
         AutoMigration(from = 65, to = 66),
         AutoMigration(from = 66, to = 67),
         // 67 -> 68 is the manual MIGRATION_67_68 (composite log indices added in place), applied via
-        // configureCommon().
+        // configureCommon(). Fork-only: upstream's own 68 must be numbered above it when synced (see
+        // MeshtasticDatabaseMigrationTest.forkVersion68IsTheForksOwnSchema).
     ],
     version = 68,
     exportSchema = true,

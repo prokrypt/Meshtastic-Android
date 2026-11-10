@@ -266,6 +266,20 @@ class RadioControllerImplTest {
     }
 
     @Test
+    fun mergeIntoTheCanonicalDatabaseReloadsCachedNodes() = runTest {
+        val selectedAddress = MutableStateFlow<String?>("tcp:selected")
+        val identity = MutableStateFlow<ConnectionIdentity?>(null)
+        everySuspend { databaseManager.associateDevice("tcp:selected", 99, null, any()) } returns true
+        createController(scope = backgroundScope, deviceAddress = selectedAddress, connectionIdentity = identity)
+        runCurrent()
+
+        identity.value = ConnectionIdentity(0L, "tcp:selected", 99, null)
+        runCurrent()
+
+        verify(exactly(1)) { nodeManager.loadCachedNodeDB() }
+    }
+
+    @Test
     fun samePhysicalIdentityAssociatesEachAddressBoundSession() = runTest {
         val selectedAddress = MutableStateFlow<String?>("ble:one")
         val activeSession = MutableStateFlow<RadioSessionContext?>(RadioSessionContext(0L, "ble:one"))
@@ -360,6 +374,7 @@ class RadioControllerImplTest {
                     associationCancelled.complete(Unit)
                     throw cancellation
                 }
+                false
             }
 
         createController(

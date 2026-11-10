@@ -19,6 +19,7 @@ package org.meshtastic.core.database.dao
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import okio.ByteString.Companion.toByteString
+import org.meshtastic.core.common.util.crc32
 import org.meshtastic.core.common.util.nowMillis
 import org.meshtastic.core.database.MeshtasticDatabase
 import org.meshtastic.core.database.entity.MyNodeEntity
@@ -180,7 +181,16 @@ abstract class CommonNodeInfoDaoTest {
                     wb.hw_model = org.meshtastic.proto.HardwareModel.TBEAM
                 }
                 .build()
-        dao.upsert(NodeEntity(num = 1, user = known, displayName = "Mine"))
+        dao.upsert(
+            NodeEntity(
+                num = 1,
+                user = known,
+                displayName = "Mine",
+                isFavorite = true,
+                isIgnored = true,
+                isMuted = true,
+            ),
+        )
 
         val placeholder =
             User.Builder()
@@ -194,6 +204,33 @@ abstract class CommonNodeInfoDaoTest {
         val stored = dao.getNodeByNum(1)?.node
         assertEquals("Broadcast", stored?.longName)
         assertEquals("Mine", stored?.displayName)
+        assertTrue(stored?.isFavorite == true, "placeholder keeps the stored favorite")
+        assertTrue(stored.isIgnored && stored.isMuted, "placeholder keeps the stored ignore and mute")
+    }
+
+    @Test
+    fun `a signed renumber moves the old row into the canonical node`() = runTest {
+        createDb()
+        val key = ByteArray(32) { (it + 3).toByte() }.toByteString()
+        val canonical = key.crc32().toInt()
+        fun user(num: Int) = User.Builder()
+            .also { wb ->
+                wb.id = "!" + num.toUInt().toString(16).padStart(8, '0')
+                wb.long_name = "Peer"
+                wb.hw_model = org.meshtastic.proto.HardwareModel.TBEAM
+                wb.public_key = key
+            }
+            .build()
+        dao.upsert(NodeEntity(num = 1, user = user(1), notes = "mine", isFavorite = true))
+
+        assertEquals(emptyList(), dao.adoptRenumberedNode(NodeEntity(num = 2, user = user(2))), "non-canonical: no-op")
+        assertEquals(listOf(1), dao.adoptRenumberedNode(NodeEntity(num = canonical, user = user(canonical))))
+
+        assertEquals(null, dao.getNodeByNum(1))
+        val moved = assertNotNull(dao.getNodeByNum(canonical)?.node)
+        assertEquals("mine", moved.notes)
+        assertTrue(moved.isFavorite)
+        assertEquals(emptyList(), dao.adoptRenumberedNode(NodeEntity(num = canonical, user = user(canonical))))
     }
 
     @Test

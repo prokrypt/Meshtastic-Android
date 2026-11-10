@@ -60,11 +60,12 @@ class FakeDatabaseManager :
         nodeNum: Int,
         deviceId: String?,
         isSessionActive: () -> Boolean,
-    ) {
-        if (lastSwitchedAddress != address || !isSessionActive()) return
+    ): Boolean {
+        if (lastSwitchedAddress != address || !isSessionActive()) return false
         lastAssociatedAddress = address
         lastAssociatedNode = nodeNum
         lastAssociatedDeviceId = deviceId
+        return false
     }
 
     override fun hasDatabaseFor(address: String?): Boolean = address != null && existingDatabases.contains(address)

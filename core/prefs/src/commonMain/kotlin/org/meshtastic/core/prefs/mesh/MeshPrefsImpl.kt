@@ -83,15 +83,25 @@ class MeshPrefsImpl(private val dataStore: MeshDataStore, dispatchers: Coroutine
 
     override suspend fun lastNodeSync(nodeNum: Int): Long = dataStore.data.first()[nodeSyncKey(nodeNum)] ?: 0L
 
-    override fun setLastNodeSync(nodeNum: Int, epochSeconds: Long) {
-        scope.launch { dataStore.edit { prefs -> prefs[nodeSyncKey(nodeNum)] = epochSeconds } }
+    override suspend fun setLastNodeSync(nodeNum: Int, epochSeconds: Long) {
+        dataStore.edit { prefs -> prefs[nodeSyncKey(nodeNum)] = epochSeconds }
     }
 
-    override fun clearNodeSyncs() {
-        scope.launch {
-            dataStore.edit { prefs ->
-                prefs.asMap().keys.filter { it.name.startsWith(NODE_SYNC_PREFIX) }.forEach { prefs -= it }
-            }
+    override suspend fun recordNodeSyncConfig(nodeNum: Int, kind: String, fingerprint: String): Boolean {
+        val key = stringPreferencesKey("${NODE_SYNC_PREFIX}cfg-$kind-${nodeNum.toUInt()}")
+        var changed = false
+        dataStore.edit { prefs ->
+            val previous = prefs[key]
+            changed = previous != null && previous != fingerprint
+            prefs[key] = fingerprint
+            if (changed) prefs[nodeSyncKey(nodeNum)] = 0L
+        }
+        return changed
+    }
+
+    override suspend fun clearNodeSyncs() {
+        dataStore.edit { prefs ->
+            prefs.asMap().keys.filter { it.name.startsWith(NODE_SYNC_PREFIX) }.forEach { prefs -= it }
         }
     }
 

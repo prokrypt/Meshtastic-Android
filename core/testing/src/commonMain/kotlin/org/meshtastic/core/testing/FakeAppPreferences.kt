@@ -375,11 +375,23 @@ class FakeMeshPrefs : MeshPrefs {
 
     override suspend fun lastNodeSync(nodeNum: Int): Long = nodeSyncs[nodeNum] ?: 0L
 
-    override fun setLastNodeSync(nodeNum: Int, epochSeconds: Long) {
+    override suspend fun setLastNodeSync(nodeNum: Int, epochSeconds: Long) {
         nodeSyncs[nodeNum] = epochSeconds
     }
 
-    override fun clearNodeSyncs() = nodeSyncs.clear()
+    val nodeSyncConfigs = mutableMapOf<Pair<Int, String>, String>()
+
+    override suspend fun recordNodeSyncConfig(nodeNum: Int, kind: String, fingerprint: String): Boolean {
+        val previous = nodeSyncConfigs.put(nodeNum to kind, fingerprint)
+        val changed = previous != null && previous != fingerprint
+        if (changed) nodeSyncs[nodeNum] = 0L
+        return changed
+    }
+
+    override suspend fun clearNodeSyncs() {
+        nodeSyncs.clear()
+        nodeSyncConfigs.clear()
+    }
 }
 
 class FakeAppFunctionsPrefs : AppFunctionsPrefs {

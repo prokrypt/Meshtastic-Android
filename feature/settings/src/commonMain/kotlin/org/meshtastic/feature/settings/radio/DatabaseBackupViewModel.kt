@@ -29,6 +29,7 @@ import org.meshtastic.core.database.DatabaseBackupOperations
 import org.meshtastic.core.database.RestoreStageResult
 import org.meshtastic.core.model.ConnectionState
 import org.meshtastic.core.repository.FileService
+import org.meshtastic.core.repository.MeshPrefs
 import org.meshtastic.core.repository.NodeRepository
 import org.meshtastic.core.repository.RadioController
 import org.meshtastic.core.repository.RadioPrefs
@@ -58,6 +59,7 @@ class DatabaseBackupViewModel(
     private val radioController: RadioController,
     private val radioPrefs: RadioPrefs,
     private val alertManager: AlertManager,
+    private val meshPrefs: MeshPrefs,
 ) : ViewModel() {
 
     /** The database and device a backup or restore acts on, captured before disconnecting switches databases. */
@@ -135,6 +137,8 @@ class DatabaseBackupViewModel(
         safeLaunch(tag = "databaseRestore") {
             var result: RestoreStageResult = RestoreStageResult.Failed(IllegalStateException("file not readable"))
             fileService.read(uri) { source -> result = backupService.stageRestore(dbName, source) }
+            // The restored database is older than the radio's last trimmed node-list sync; ask for full lists again.
+            if (result == RestoreStageResult.Staged) meshPrefs.clearNodeSyncs()
             alertManager.showAlert(message = restoreMessage(result))
         }
     }

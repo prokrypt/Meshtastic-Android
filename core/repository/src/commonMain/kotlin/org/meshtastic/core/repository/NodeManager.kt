@@ -213,6 +213,14 @@ interface NodeManager : NodeIdLookup {
     fun applyTrustedIdentityMigrations(removedNums: Collection<Int>)
 
     /**
+     * Call after [handleReceivedUser] for a NodeInfo whose XEdDSA signature the radio verified. When [nodeNum] is the
+     * canonical number of the key it carries (firmware 2.8: crc32(public key)), stored rows for the same key under
+     * older numbers are migrated into it, so a renumbered peer stops showing twice. The signature proves the sender
+     * holds the key, which an unsigned NodeInfo (anyone can broadcast a public key) never does.
+     */
+    fun adoptSignedRenumber(nodeNum: Int, session: RadioSessionContext? = null) {}
+
+    /**
      * Installs node information in memory. Callers that require an immediate standalone write use
      * [installNodeInfoAndPersist]; configuration handshakes batch the resulting snapshot through the repository.
      */

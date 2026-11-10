@@ -360,9 +360,13 @@ class NodeRepositoryImpl(
     override suspend fun clearNodeDB(preserveFavorites: Boolean) = withContext(dispatchers.io) {
         forgetUnsavedNodes()
         nodeInfoWriteDataSource.clearNodeDB(preserveFavorites)
-        // A trimmed node-list sync assumes the app still holds what it last synced; this DB no longer does.
-        meshPrefs.clearNodeSyncs()
+        // A trimmed node-list sync assumes the app still holds what it last synced; this radio's DB no longer does.
+        // Other radios keep their own DBs, so only this one's record goes (all of them when the radio is unknown).
+        myNodeInfo.value?.myNodeNum?.let { meshPrefs.setLastNodeSync(it, 0L) } ?: meshPrefs.clearNodeSyncs()
     }
+
+    override suspend fun adoptRenumberedNode(node: Node): List<Int> =
+        withContext(dispatchers.io) { nodeInfoWriteDataSource.adoptRenumberedNode(node.toEntity()) }
 
     /** Clears the local node's connection info. */
     override suspend fun clearMyNodeInfo() = withContext(dispatchers.io) { nodeInfoWriteDataSource.clearMyNodeInfo() }

@@ -363,6 +363,13 @@ class MeshDataHandlerTest {
         handler.handleReceivedData(packet, myNodeNum)
 
         verify { nodeManager.handleReceivedUser(remoteNum, any(), any(), any(), session) }
+        verify(exactly(0)) { nodeManager.adoptSignedRenumber(any(), any()) }
+
+        // Only a NodeInfo the radio verified as signed by its key may move older numbers into it.
+        val signed = packet.newBuilder().also { it.xeddsa_signed = true }.build()
+        every { dataMapper.toDataPacket(signed) } returns dataPacket
+        handler.handleReceivedData(signed, myNodeNum)
+        verify(exactly(1)) { nodeManager.adoptSignedRenumber(remoteNum, session) }
     }
 
     @Test

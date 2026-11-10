@@ -228,6 +228,15 @@ interface NodeRepository {
     suspend fun installConfig(mi: MyNodeInfo, nodes: List<Node>): List<Int>
 
     /**
+     * Migrates stored rows holding [node]'s key under other numbers into [node], when [node]'s number is that key's
+     * canonical crc32 number. Only for a NodeInfo whose signature the radio verified (see
+     * [NodeManager.adoptSignedRenumber]). Writes nothing when there is nothing to migrate.
+     *
+     * @return the node numbers whose rows were migrated away.
+     */
+    suspend fun adoptRenumberedNode(node: Node): List<Int> = emptyList()
+
+    /**
      * Persists hardware metadata for a node.
      *
      * @param nodeNum The node number.

@@ -919,7 +919,8 @@ open class DatabaseManager(private val datastore: DatabaseDataStore, private val
         nodeNum: Int,
         deviceId: String?,
         isSessionActive: () -> Boolean,
-    ) = withManagerOperation {
+    ): Boolean = withManagerOperation {
+        var switched = false
         try {
             mutex.withLock {
                 fun ensureAssociationActive() {
@@ -1124,6 +1125,7 @@ open class DatabaseManager(private val datastore: DatabaseDataStore, private val
                             withContext(NonCancellable) {
                                 if (mergeCommitted) {
                                     releaseWriterGate(dest, claimed)
+                                    switched = true
                                     recordLogicalRetirement(sourceName, persistIntent = !retirementPersisted)
                                 } else {
                                     releaseWriterGate(source, sourceName)
@@ -1138,6 +1140,7 @@ open class DatabaseManager(private val datastore: DatabaseDataStore, private val
                 "Aborted stale database association for ${anonymizeAddress(address)} after transport-session rollover"
             }
         }
+        switched
     }
 
     /**

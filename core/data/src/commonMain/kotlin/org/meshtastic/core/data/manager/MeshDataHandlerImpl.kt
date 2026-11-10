@@ -366,6 +366,7 @@ class MeshDataHandlerImpl(
                     }
                 }
         nodeManager.handleReceivedUser(packet.from, u, packet.channel, session = session)
+        if (packet.xeddsa_signed) nodeManager.adoptSignedRenumber(packet.from, session)
     }
 
     private fun handleNodeStatus(

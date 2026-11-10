@@ -226,12 +226,16 @@ class RadioControllerImpl(
                     try {
                         val admitted =
                             radioInterfaceService.runWithSessionLease(authorizingSession) { lease ->
-                                databaseManager.associateDevice(
-                                    identity.address,
-                                    identity.nodeNum,
-                                    identity.deviceId,
-                                    lease::isCurrent,
-                                )
+                                val merged =
+                                    databaseManager.associateDevice(
+                                        identity.address,
+                                        identity.nodeNum,
+                                        identity.deviceId,
+                                        lease::isCurrent,
+                                    )
+                                // Memory was loaded from the merged-away DB: fill in the canonical DB's nodes (keys,
+                                // names, flags) the radio did not dump, or key pushes and placeholders go wrong.
+                                if (merged) nodeManager.loadCachedNodeDB()
                             }
                         if (!admitted) {
                             Logger.d { "[DeviceAssociation] skip revoked-session node=${identity.nodeNum}" }

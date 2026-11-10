@@ -135,7 +135,10 @@ class MeshMessageProcessorImplTest {
             }
     }
 
-    private fun createProcessor(scope: CoroutineScope): MeshMessageProcessorImpl = MeshMessageProcessorImpl(
+    private fun createProcessor(
+        scope: CoroutineScope,
+        writeDeferral: StorageWriteDeferral = StorageWriteDeferral(),
+    ): MeshMessageProcessorImpl = MeshMessageProcessorImpl(
         nodeManager = nodeManager,
         serviceStateWriter = serviceRepository,
         meshLogRepository = lazy { meshLogRepository },
@@ -143,7 +146,7 @@ class MeshMessageProcessorImplTest {
         fromRadioDispatcher = fromRadioDispatcher,
         radioInterfaceService = radioInterfaceService,
         scope = scope.asServiceScope(),
-        writeDeferral = StorageWriteDeferral(),
+        writeDeferral = writeDeferral,
     )
 
     private fun frame(bytes: ByteArray, frameSession: RadioSessionContext = session) =
@@ -964,5 +967,23 @@ class MeshMessageProcessorImplTest {
         advanceUntilIdle()
 
         verifySuspend { meshLogRepository.insert(any()) }
+    }
+
+    @Test
+    fun `log rows are held while out of view only when logging is on`() = runTest(testDispatcher) {
+        processor = createProcessor(backgroundScope, StorageWriteDeferral().apply { setAppForeground(false) })
+        val logRecord = LogRecord.Builder().also { wb -> wb.message = "device log" }.build()
+        val bytes = FromRadio.Builder().also { wb -> wb.log_record = logRecord }.build().encode()
+
+        every { meshLogRepository.isLoggingEnabled } returns false
+        processor.handleFromRadio(frame(bytes), myNodeNum)
+        processor.flushDeferredWrites()
+        verifySuspend(mode = VerifyMode.exactly(0)) { meshLogRepository.insertAll(any()) }
+
+        every { meshLogRepository.isLoggingEnabled } returns true
+        processor.handleFromRadio(frame(bytes), myNodeNum)
+        processor.flushDeferredWrites()
+        verifySuspend(mode = VerifyMode.exactly(1)) { meshLogRepository.insertAll(any()) }
+        verifySuspend(mode = VerifyMode.exactly(0)) { meshLogRepository.insert(any()) }
     }
 }

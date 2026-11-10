@@ -418,7 +418,8 @@ class MeshMessageProcessorImpl(
     private fun insertMeshLog(log: MeshLog, session: RadioSessionContext): Job? {
         // A traceroute's row is written at once: its handler waits for it and stores a snapshot that refers to it.
         if (writeDeferral.deferring.value && log.portNum != PortNum.TRACEROUTE_APP.value) {
-            holdLog(log, session)
+            // With logging off the save would discard the row; don't keep it in memory until then.
+            if (meshLogRepository.value.isLoggingEnabled) holdLog(log, session)
             return null
         }
         return launchSessionBound(session, "mesh-log insert") { meshLogRepository.value.insert(log) }

@@ -67,6 +67,10 @@ interface MeshLogRepository {
     /** Returns the cached [MyNodeInfo] from the system logs. */
     fun getMyNodeInfo(): Flow<MyNodeInfo?>
 
+    /** False while logging is off and [insert] discards every row, so a caller need not hold rows for it. */
+    val isLoggingEnabled: Boolean
+        get() = true
+
     /** Persists a new log entry to the database. */
     suspend fun insert(log: MeshLog)
 

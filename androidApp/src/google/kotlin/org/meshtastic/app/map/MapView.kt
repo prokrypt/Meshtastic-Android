@@ -1479,8 +1479,8 @@ private fun MainMapContent(
         nodeClusterItems = nodeClusterItems,
         mapFilterState = mapFilterState,
         navigateToNodeDetails = navigateToNodeDetails,
-        // Members of a merged chip sit within its merge radius of the first one, so spanning twice that splits them.
-        onStackClick = { openGroup(it, 2 * MERGE_DISTANCE_DP) },
+        // A merged chip lists its nodes and leaves the camera alone; only cluster bubbles zoom.
+        onStackClick = { onShowClusterItemsDialog(it) },
         onClusterClick = { cluster ->
             openGroup(cluster.items.toList(), CLUSTER_MAX_DISTANCE_DP)
             true

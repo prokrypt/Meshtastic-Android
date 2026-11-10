@@ -365,10 +365,10 @@ private fun LatLngBounds.atLeastSpan(meters: Double): LatLngBounds {
 private const val MIN_COS_LATITUDE = 0.01
 
 /**
- * Nodes closer than this on screen merge into one chip with a count badge, so every chip stays tappable. One chip's
- * minimum width ([org.meshtastic.core.ui.component.NodeChip]).
+ * Nodes closer than this on screen merge into one chip with a count badge: one chip's minimum height
+ * ([org.meshtastic.core.ui.component.NodeChip]), so only chips that would sit almost on top of each other merge.
  */
-private const val MERGE_DISTANCE_DP = 64
+private const val MERGE_DISTANCE_DP = 28
 
 // Web Mercator ground meters per dp at zoom 0 on the equator, for Google's 256 dp tiles.
 private const val METERS_PER_DP_AT_ZOOM_0 = 156_543.033_92

@@ -55,3 +55,9 @@ internal fun resolveDbClaim(
     deviceKey: Preferences.Key<String>?,
     nodeKey: Preferences.Key<String>,
 ): String? = deviceKey?.let { prefs[it] } ?: prefs[nodeKey]
+
+/** True when a device id other than [deviceKey]'s holds the claim on [dbName], so that DB is another radio's. */
+internal fun isClaimedByAnotherDevice(prefs: Preferences, deviceKey: Preferences.Key<String>, dbName: String): Boolean =
+    prefs.asMap().any { (key, value) ->
+        key != deviceKey && key.name.startsWith(DatabaseConstants.DEVICE_DB_FOR_PREFIX) && value == dbName
+    }

@@ -18,7 +18,6 @@ package org.meshtastic.app.map
 
 import android.app.Application
 import android.net.Uri
-import androidx.compose.runtime.snapshotFlow
 import androidx.core.net.toFile
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
@@ -103,7 +102,6 @@ import org.meshtastic.feature.map.tiles.isValidTileUrlTemplate
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
-import kotlin.math.roundToInt
 import kotlin.uuid.Uuid
 
 /** Waypoint coordinates arrive as integer degrees scaled by 1e7. */
@@ -181,33 +179,20 @@ class MapViewModel(
     val liveMapNodes = LiveMapNodes()
 
     /**
-     * How far apart nodes may be and still share a chip, which follows the camera. Whole zoom levels and degrees, so a
-     * pinch or pan only regroups when the merge distance really changes.
-     */
-    private val markerSpreadMeters: Flow<Double> = snapshotFlow {
-        val camera = cameraPositionState.position
-        mergeSpreadMeters(zoom = camera.zoom.toInt(), latitude = camera.target.latitude.roundToInt().toDouble())
-    }
-
-    /**
-     * The main map's node markers: filtered, stacked and merged for the current zoom.
+     * The main map's node markers: filtered, and stacked where nodes share a spot.
      *
      * Built here, off the main thread, rather than in the map's composition, where it ran again for every packet and
      * every camera frame. Each minute it is built again as well, so the heard-within filters keep up on a quiet mesh.
      */
     val nodeMarkers: StateFlow<NodeMarkerSet> = flow {
-        // The camera sits on a placeholder until its saved position is read, and markers grouped for that zoom
-        // would only be thrown away.
-        cameraInitialization.first { it != CameraInitialization.Loading }
         val nodeNums =
             combine(ourNodeInfo, myNodeInfo) { ours, mine -> ours?.num to mine?.myNodeNum }.distinctUntilChanged()
         var previous: NodeMarkerSet? = null
         emitAll(
-            combine(nodesWithPosition, mapFilterStateFlow, nodeNums, markerSpreadMeters, relativeTimeBuckets()) {
+            combine(nodesWithPosition, mapFilterStateFlow, nodeNums, relativeTimeBuckets()) {
                     nodes,
                     filterState,
                     (ourNodeNum, myNodeNum),
-                    spreadMeters,
                     _,
                 ->
                 buildNodeMarkerSet(
@@ -216,7 +201,6 @@ class MapViewModel(
                     nowSeconds = nowSeconds,
                     ourNodeNum = ourNodeNum,
                     myNodeNum = myNodeNum,
-                    spreadMeters = spreadMeters,
                     liveNodes = liveMapNodes,
                     previous = previous,
                 )

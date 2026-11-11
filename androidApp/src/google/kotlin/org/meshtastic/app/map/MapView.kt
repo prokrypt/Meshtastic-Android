@@ -201,7 +201,6 @@ import org.meshtastic.feature.coverage.RegionTerrain
 import org.meshtastic.feature.coverage.rememberCoverageEstimate
 import org.meshtastic.feature.map.BaseMapViewModel.MapFilterState
 import org.meshtastic.feature.map.MapBounds
-import org.meshtastic.feature.map.STACK_SPREAD_METERS
 import org.meshtastic.feature.map.TRACK_FADE_LEVELS
 import org.meshtastic.feature.map.TRACK_STOP_RADIUS_METERS
 import org.meshtastic.feature.map.component.ClusterMemberEntry
@@ -358,21 +357,6 @@ private fun LatLngBounds.atLeastSpan(meters: Double): LatLngBounds {
 }
 
 private const val MIN_COS_LATITUDE = 0.01
-
-/**
- * Nodes closer than this on screen merge into one chip with a count badge: one chip's minimum height
- * ([org.meshtastic.core.ui.component.NodeChip]), so only chips that would sit almost on top of each other merge.
- */
-private const val MERGE_DISTANCE_DP = 28
-
-// Web Mercator ground meters per dp at zoom 0 on the equator, for Google's 256 dp tiles.
-private const val METERS_PER_DP_AT_ZOOM_0 = 156_543.033_92
-
-/** How far apart, on the ground, nodes may be and still merge at [zoom] around [latitude]. */
-internal fun mergeSpreadMeters(zoom: Int, latitude: Double): Double = max(
-    STACK_SPREAD_METERS,
-    MERGE_DISTANCE_DP * METERS_PER_DP_AT_ZOOM_0 * cos(Math.toRadians(latitude)) / (1 shl zoom),
-)
 
 // Google's deepest zoom for its roadmap and satellite tiles in most places.
 private const val MAX_CLUSTER_SPLIT_ZOOM = 21

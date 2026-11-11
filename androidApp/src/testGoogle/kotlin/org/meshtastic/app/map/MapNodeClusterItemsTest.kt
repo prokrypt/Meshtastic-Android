@@ -118,13 +118,23 @@ class MapNodeClusterItemsTest {
 
     @Test
     fun `the order nodes arrive in does not regroup the map`() {
-        // Close enough to merge in overlapping pairs, so which node anchors a group decides the grouping.
-        val nodes = testNodes(count = 9)
-        val forward = markerSet(nodes, spreadMeters = 25.0)
-        val reversed = markerSet(nodes.reversed(), spreadMeters = 25.0)
+        // A chain about 3 m apart: each node stacks with the next but not the one after, so which node anchors a
+        // stack decides the stacks.
+        val origin = testNodes(count = 1).single()
+        val nodes =
+            testNodes(count = 9).mapIndexed { index, node ->
+                val position =
+                    origin.position
+                        .newBuilder()
+                        .also { it.latitude_i = (origin.position.latitude_i ?: 0) + index * CHAIN_STEP }
+                        .build()
+                node.copy(position = position)
+            }
+        val forward = markerSet(nodes)
+        val reversed = markerSet(nodes.reversed())
 
         assertEquals(forward.items, reversed.items)
-        assertTrue(forward.items.any { it.stackMemberNums.size > 1 })
+        assertTrue(forward.items.size in 2 until nodes.size)
     }
 
     @Test
@@ -151,12 +161,12 @@ class MapNodeClusterItemsTest {
     }
 
     @Test
-    fun `nearby nodes merge into one chip unless there are enough for a bubble`() {
-        assertEquals(listOf(3), itemsFor(testNodes(count = 3), spreadMeters = 1_000.0).map { it.stackMemberNums.size })
+    fun `nodes that are merely near each other keep an item each`() {
+        // 11 m apart. Whether their chips overlap depends on the zoom, which is the clustering's to judge.
+        val items = itemsFor(testNodes(count = 12))
 
-        val bubble = itemsFor(testNodes(count = 12), spreadMeters = 1_000.0)
-        assertEquals(12, bubble.size)
-        assertTrue(bubble.all { it.stackMemberNums.isEmpty() })
+        assertEquals(12, items.size)
+        assertTrue(items.all { it.stackMemberNums.isEmpty() })
     }
 
     @Test
@@ -250,7 +260,6 @@ class MapNodeClusterItemsTest {
         nodes: List<Node>,
         filter: MapFilterState = FILTER,
         now: Long = NOW,
-        spreadMeters: Double = 5.0,
         previous: NodeMarkerSet? = null,
     ) = buildNodeMarkerSet(
         nodes = nodes,
@@ -258,18 +267,19 @@ class MapNodeClusterItemsTest {
         nowSeconds = now,
         ourNodeNum = null,
         myNodeNum = null,
-        spreadMeters = spreadMeters,
         liveNodes = liveNodes,
         previous = previous,
     )
 
-    private fun itemsFor(nodes: List<Node>, myNodeNum: Int? = null, spreadMeters: Double = 5.0) =
-        buildNodeClusterItems(nodes, myNodeNum, spreadMeters, liveNodes)
+    private fun itemsFor(nodes: List<Node>, myNodeNum: Int? = null) = buildNodeClusterItems(nodes, myNodeNum, liveNodes)
 
     private companion object {
         const val NODE_COUNT = 2_000
         const val FIXED_TIME_BUCKET = 123L
         const val NOW = 1_700_100_000L
+
+        // In 1e-7 degrees of latitude: about 3.3 m.
+        const val CHAIN_STEP = 300
 
         val FILTER =
             MapFilterState(

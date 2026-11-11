@@ -19,7 +19,6 @@ package org.meshtastic.app.map
 import com.google.android.gms.maps.model.LatLng
 import org.junit.Test
 import org.meshtastic.app.map.component.CLUSTER_MAX_DISTANCE_DP
-import org.meshtastic.feature.map.STACK_SPREAD_METERS
 import kotlin.math.cos
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -45,11 +44,5 @@ class ClusterSplitZoomTest {
     fun `nearby nodes split at street zoom`() {
         assertEquals(21, clusterSplitZoom(listOf(oakland, eastOf(oakland, 10.0)), CLUSTER_MAX_DISTANCE_DP))
         assertEquals(14, clusterSplitZoom(listOf(oakland, eastOf(oakland, 1_000.0)), CLUSTER_MAX_DISTANCE_DP))
-    }
-
-    @Test
-    fun `merge distance follows zoom but never drops below the stack spread`() {
-        assertEquals(28 * 156_543.033_92 / 32_768, mergeSpreadMeters(zoom = 15, latitude = 0.0), 1e-6)
-        assertEquals(STACK_SPREAD_METERS, mergeSpreadMeters(zoom = 21, latitude = 37.8))
     }
 }

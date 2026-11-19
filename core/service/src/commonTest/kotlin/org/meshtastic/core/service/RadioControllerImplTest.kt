@@ -205,8 +205,8 @@ class RadioControllerImplTest {
         val serviceRepository = ServiceRepositoryImpl()
         serviceRepository.setConnectionState(ConnectionState.Connected)
         val controller = createController(scope = scope, myNodeNum = myNodeNum, serviceRepository = serviceRepository)
-        everySuspend { commandSender.sendAdminAwait(any(), any(), any(), any()) } returns true
-        everySuspend { commandSender.sendAdminAwaitResult(any(), any(), any(), any()) } calls
+        everySuspend { commandSender.sendAdminAwaitForConnection(any(), any(), any(), any(), any()) } returns true
+        everySuspend { commandSender.sendAdminAwaitResultForConnection(any(), any(), any(), any(), any()) } calls
             {
                 beforeCommitDispatch(serviceRepository)
                 // Capture after the pre-dispatch hook; commitResult then models events that happen after admission.
@@ -966,8 +966,9 @@ class RadioControllerImplTest {
     @Test
     fun editLocalSettingsChannelWritesDoNotMirrorToLocalCache() = runTest {
         val controller = createController(scope = backgroundScope, myNodeNum = 1234)
-        everySuspend { commandSender.sendAdminAwait(any(), any(), any(), any()) } returns true
-        everySuspend { commandSender.sendAdminAwaitResult(any(), any(), any(), any()) } returns acceptedSendResult()
+        everySuspend { commandSender.sendAdminAwaitForConnection(any(), any(), any(), any(), any()) } returns true
+        everySuspend { commandSender.sendAdminAwaitResultForConnection(any(), any(), any(), any(), any()) } returns
+            acceptedSendResult()
 
         controller.editLocalSettings {
             setChannel(
@@ -993,9 +994,9 @@ class RadioControllerImplTest {
 
         // Exactly four packets: awaited begin + 2 channel writes + awaited commit. The tight count also catches a
         // duplicated boundary or an accidental double-write per channel.
-        verifySuspend(exactly(1)) { commandSender.sendAdminAwait(any(), any(), any(), any()) }
-        verifySuspend(exactly(1)) { commandSender.sendAdminAwaitResult(any(), any(), any(), any()) }
-        verifySuspend(exactly(2)) { commandSender.sendAdmin(any(), any(), any(), any()) }
+        verifySuspend(exactly(1)) { commandSender.sendAdminAwaitForConnection(any(), any(), any(), any(), any()) }
+        verifySuspend(exactly(1)) { commandSender.sendAdminAwaitResultForConnection(any(), any(), any(), any(), any()) }
+        verifySuspend(exactly(2)) { commandSender.sendAdminForConnection(any(), any(), any(), any(), any()) }
         // A transactional channel write must not eagerly mirror to the local cache like a one-shot setRemoteChannel.
         // The batch operation knows the complete target set and must reconcile it after the transaction; per-slot
         // mirroring here could expose a partial cache when a later write or commit fails.
@@ -1006,22 +1007,22 @@ class RadioControllerImplTest {
     fun editSettingsAwaitsBoundariesAroundOrderedWrites() = runTest {
         val controller = createController(scope = backgroundScope, myNodeNum = 1234)
         val sentMessages = mutableListOf<AdminMessage>()
-        everySuspend { commandSender.sendAdminAwait(any(), any(), any(), any()) } calls
+        everySuspend { commandSender.sendAdminAwaitForConnection(any(), any(), any(), any(), any()) } calls
             {
                 @Suppress("UNCHECKED_CAST")
-                sentMessages += (it.args[3] as () -> AdminMessage)()
+                sentMessages += (it.args[4] as () -> AdminMessage)()
                 true
             }
-        everySuspend { commandSender.sendAdminAwaitResult(any(), any(), any(), any()) } calls
+        everySuspend { commandSender.sendAdminAwaitResultForConnection(any(), any(), any(), any(), any()) } calls
             {
                 @Suppress("UNCHECKED_CAST")
-                sentMessages += (it.args[3] as () -> AdminMessage)()
+                sentMessages += (it.args[4] as () -> AdminMessage)()
                 acceptedSendResult()
             }
-        everySuspend { commandSender.sendAdmin(any(), any(), any(), any()) } calls
+        everySuspend { commandSender.sendAdminForConnection(any(), any(), any(), any(), any()) } calls
             {
                 @Suppress("UNCHECKED_CAST")
-                sentMessages += (it.args[3] as () -> AdminMessage)()
+                sentMessages += (it.args[4] as () -> AdminMessage)()
             }
 
         controller.editLocalSettings {
@@ -1073,8 +1074,8 @@ class RadioControllerImplTest {
                 }
                 .build()
         val fixedPosition = Position(latitude = 47.6, longitude = -122.3, altitude = 42)
-        everySuspend { commandSender.sendAdminAwait(any(), any(), any(), any()) } returns true
-        everySuspend { commandSender.sendAdminAwaitResult(any(), any(), any(), any()) } calls
+        everySuspend { commandSender.sendAdminAwaitForConnection(any(), any(), any(), any(), any()) } returns true
+        everySuspend { commandSender.sendAdminAwaitResultForConnection(any(), any(), any(), any(), any()) } calls
             {
                 commitStarted.complete(Unit)
                 releaseCommit.await()
@@ -1126,9 +1127,10 @@ class RadioControllerImplTest {
                         ModuleConfig.StatusMessageConfig.Builder().also { wb -> wb.node_status = "Ready" }.build()
                 }
                 .build()
-        everySuspend { commandSender.sendAdminAwait(any(), any(), any(), any()) } returns true
-        everySuspend { commandSender.sendAdminAwaitResult(any(), any(), any(), any()) } returns acceptedSendResult()
-        everySuspend { commandSender.sendAdmin(any(), any(), any(), any()) } returns Unit
+        everySuspend { commandSender.sendAdminAwaitForConnection(any(), any(), any(), any(), any()) } returns true
+        everySuspend { commandSender.sendAdminAwaitResultForConnection(any(), any(), any(), any(), any()) } returns
+            acceptedSendResult()
+        everySuspend { commandSender.sendAdminForConnection(any(), any(), any(), any(), any()) } returns Unit
 
         controller.editLocalSettings {
             coroutineScope {
@@ -1149,12 +1151,13 @@ class RadioControllerImplTest {
     fun editSettingsDoesNotProjectZeroPositionWhenRemovingFixedPosition() = runTest {
         val controller = createController(scope = backgroundScope, myNodeNum = 1234)
         val writes = mutableListOf<AdminMessage>()
-        everySuspend { commandSender.sendAdminAwait(any(), any(), any(), any()) } returns true
-        everySuspend { commandSender.sendAdminAwaitResult(any(), any(), any(), any()) } returns acceptedSendResult()
-        everySuspend { commandSender.sendAdmin(any(), any(), any(), any()) } calls
+        everySuspend { commandSender.sendAdminAwaitForConnection(any(), any(), any(), any(), any()) } returns true
+        everySuspend { commandSender.sendAdminAwaitResultForConnection(any(), any(), any(), any(), any()) } returns
+            acceptedSendResult()
+        everySuspend { commandSender.sendAdminForConnection(any(), any(), any(), any(), any()) } calls
             {
                 @Suppress("UNCHECKED_CAST")
-                writes += (it.args[3] as () -> AdminMessage)()
+                writes += (it.args[4] as () -> AdminMessage)()
             }
 
         controller.editLocalSettings {
@@ -1169,8 +1172,9 @@ class RadioControllerImplTest {
     @Test
     fun editSettingsRejectsFixedPositionWriteBeforeDeviceMutationWhenLocalNodeIsUnavailable() = runTest {
         val controller = createController(scope = backgroundScope, myNodeNum = null)
-        everySuspend { commandSender.sendAdminAwait(any(), any(), any(), any()) } returns true
-        everySuspend { commandSender.sendAdminAwaitResult(any(), any(), any(), any()) } returns acceptedSendResult()
+        everySuspend { commandSender.sendAdminAwaitForConnection(any(), any(), any(), any(), any()) } returns true
+        everySuspend { commandSender.sendAdminAwaitResultForConnection(any(), any(), any(), any(), any()) } returns
+            acceptedSendResult()
 
         assertFailsWith<LocalNodeUnavailableException> {
             controller.editSettings(destNum = 99) {
@@ -1178,9 +1182,9 @@ class RadioControllerImplTest {
             }
         }
 
-        verifySuspend(exactly(0)) { commandSender.sendAdmin(any(), any(), any(), any()) }
-        verifySuspend(exactly(1)) { commandSender.sendAdminAwait(any(), any(), any(), any()) }
-        verifySuspend(exactly(1)) { commandSender.sendAdminAwaitResult(any(), any(), any(), any()) }
+        verifySuspend(exactly(0)) { commandSender.sendAdminForConnection(any(), any(), any(), any(), any()) }
+        verifySuspend(exactly(1)) { commandSender.sendAdminAwaitForConnection(any(), any(), any(), any(), any()) }
+        verifySuspend(exactly(1)) { commandSender.sendAdminAwaitResultForConnection(any(), any(), any(), any(), any()) }
         verify(exactly(0)) { nodeManager.handleReceivedPosition(any(), any(), any(), any(), any()) }
     }
 
@@ -1195,8 +1199,9 @@ class RadioControllerImplTest {
                 }
                 .build()
         val config = Config.Builder().also { wb -> wb.device = Config.DeviceConfig.Builder().build() }.build()
-        everySuspend { commandSender.sendAdminAwait(any(), any(), any(), any()) } returns true
-        everySuspend { commandSender.sendAdminAwaitResult(any(), any(), any(), any()) } returns acceptedSendResult()
+        everySuspend { commandSender.sendAdminAwaitForConnection(any(), any(), any(), any(), any()) } returns true
+        everySuspend { commandSender.sendAdminAwaitResultForConnection(any(), any(), any(), any(), any()) } returns
+            acceptedSendResult()
         every { nodeManager.handleReceivedUser(any(), any(), any(), any(), any()) } throws
             IllegalStateException("projection failed")
 
@@ -1212,8 +1217,8 @@ class RadioControllerImplTest {
     @Test
     fun editSettingsDiscardsStagedLocalProjectionsWhenCommitFails() = runTest {
         val controller = createController(scope = backgroundScope, myNodeNum = 1234)
-        everySuspend { commandSender.sendAdminAwait(any(), any(), any(), any()) } returns true
-        everySuspend { commandSender.sendAdminAwaitResult(any(), any(), any(), any()) } returns
+        everySuspend { commandSender.sendAdminAwaitForConnection(any(), any(), any(), any(), any()) } returns true
+        everySuspend { commandSender.sendAdminAwaitResultForConnection(any(), any(), any(), any(), any()) } returns
             dispatchedSendResult(AwaitedSendStatus.RADIO_REJECTED)
 
         assertFailsWith<EditSettingsTransactionException> {
@@ -1253,8 +1258,9 @@ class RadioControllerImplTest {
     fun editSettingsDiscardsStagedLocalProjectionsWhenBlockFails() = runTest {
         val controller = createController(scope = backgroundScope, myNodeNum = 1234)
         val blockFailure = IllegalArgumentException("transaction failed after writes")
-        everySuspend { commandSender.sendAdminAwait(any(), any(), any(), any()) } returns true
-        everySuspend { commandSender.sendAdminAwaitResult(any(), any(), any(), any()) } returns acceptedSendResult()
+        everySuspend { commandSender.sendAdminAwaitForConnection(any(), any(), any(), any(), any()) } returns true
+        everySuspend { commandSender.sendAdminAwaitResultForConnection(any(), any(), any(), any(), any()) } returns
+            acceptedSendResult()
 
         val failure =
             assertFailsWith<IllegalArgumentException> {
@@ -1295,7 +1301,7 @@ class RadioControllerImplTest {
     @Test
     fun editSettingsRejectsFailedBeginBeforeRunningWrites() = runTest {
         val controller = createController(scope = backgroundScope, myNodeNum = 1234)
-        everySuspend { commandSender.sendAdminAwait(any(), any(), any(), any()) } returns false
+        everySuspend { commandSender.sendAdminAwaitForConnection(any(), any(), any(), any(), any()) } returns false
         var blockRan = false
 
         val failure =
@@ -1303,16 +1309,16 @@ class RadioControllerImplTest {
 
         assertEquals(editSettingsBoundaryFailureMessage("begin"), failure.message)
         assertFalse(blockRan)
-        verifySuspend(exactly(1)) { commandSender.sendAdminAwait(any(), any(), any(), any()) }
-        verifySuspend(exactly(0)) { commandSender.sendAdminAwaitResult(any(), any(), any(), any()) }
-        verifySuspend(exactly(0)) { commandSender.sendAdmin(any(), any(), any(), any()) }
+        verifySuspend(exactly(1)) { commandSender.sendAdminAwaitForConnection(any(), any(), any(), any(), any()) }
+        verifySuspend(exactly(0)) { commandSender.sendAdminAwaitResultForConnection(any(), any(), any(), any(), any()) }
+        verifySuspend(exactly(0)) { commandSender.sendAdminForConnection(any(), any(), any(), any(), any()) }
     }
 
     @Test
     fun editSettingsReportsFailedCommitAfterOrderedWrites() = runTest {
         val controller = createController(scope = backgroundScope, myNodeNum = 1234)
-        everySuspend { commandSender.sendAdminAwait(any(), any(), any(), any()) } returns true
-        everySuspend { commandSender.sendAdminAwaitResult(any(), any(), any(), any()) } returns
+        everySuspend { commandSender.sendAdminAwaitForConnection(any(), any(), any(), any(), any()) } returns true
+        everySuspend { commandSender.sendAdminAwaitResultForConnection(any(), any(), any(), any(), any()) } returns
             dispatchedSendResult(AwaitedSendStatus.RADIO_REJECTED)
 
         val failure =
@@ -1334,18 +1340,19 @@ class RadioControllerImplTest {
             editSettingsCommitFailureMessage(AwaitedSendStatus.RADIO_REJECTED, dispatched = true),
             failure.message,
         )
-        verifySuspend(exactly(1)) { commandSender.sendAdminAwait(any(), any(), any(), any()) }
-        verifySuspend(exactly(1)) { commandSender.sendAdminAwaitResult(any(), any(), any(), any()) }
-        verifySuspend(exactly(1)) { commandSender.sendAdmin(any(), any(), any(), any()) }
+        verifySuspend(exactly(1)) { commandSender.sendAdminAwaitForConnection(any(), any(), any(), any(), any()) }
+        verifySuspend(exactly(1)) { commandSender.sendAdminAwaitResultForConnection(any(), any(), any(), any(), any()) }
+        verifySuspend(exactly(1)) { commandSender.sendAdminForConnection(any(), any(), any(), any(), any()) }
     }
 
     @Test
     fun editSettingsCommitsAfterWriteFailureAndRethrowsOriginal() = runTest {
         val controller = createController(scope = backgroundScope, myNodeNum = 1234)
         val writeFailure = IllegalArgumentException("settings write failed")
-        everySuspend { commandSender.sendAdminAwait(any(), any(), any(), any()) } returns true
-        everySuspend { commandSender.sendAdminAwaitResult(any(), any(), any(), any()) } returns acceptedSendResult()
-        everySuspend { commandSender.sendAdmin(any(), any(), any(), any()) } throws writeFailure
+        everySuspend { commandSender.sendAdminAwaitForConnection(any(), any(), any(), any(), any()) } returns true
+        everySuspend { commandSender.sendAdminAwaitResultForConnection(any(), any(), any(), any(), any()) } returns
+            acceptedSendResult()
+        everySuspend { commandSender.sendAdminForConnection(any(), any(), any(), any(), any()) } throws writeFailure
 
         val failure =
             assertFailsWith<IllegalArgumentException> {
@@ -1364,16 +1371,16 @@ class RadioControllerImplTest {
 
         assertSame(writeFailure, failure)
         assertTrue(failure.suppressedExceptions.isEmpty())
-        verifySuspend(exactly(1)) { commandSender.sendAdminAwait(any(), any(), any(), any()) }
-        verifySuspend(exactly(1)) { commandSender.sendAdminAwaitResult(any(), any(), any(), any()) }
-        verifySuspend(exactly(1)) { commandSender.sendAdmin(any(), any(), any(), any()) }
+        verifySuspend(exactly(1)) { commandSender.sendAdminAwaitForConnection(any(), any(), any(), any(), any()) }
+        verifySuspend(exactly(1)) { commandSender.sendAdminAwaitResultForConnection(any(), any(), any(), any(), any()) }
+        verifySuspend(exactly(1)) { commandSender.sendAdminForConnection(any(), any(), any(), any(), any()) }
     }
 
     @Test
     fun editSettingsSuppressesCommitFailureOnBlockFailure() = runTest {
         val controller = createController(scope = backgroundScope, myNodeNum = 1234)
-        everySuspend { commandSender.sendAdminAwait(any(), any(), any(), any()) } returns true
-        everySuspend { commandSender.sendAdminAwaitResult(any(), any(), any(), any()) } returns
+        everySuspend { commandSender.sendAdminAwaitForConnection(any(), any(), any(), any(), any()) } returns true
+        everySuspend { commandSender.sendAdminAwaitResultForConnection(any(), any(), any(), any(), any()) } returns
             dispatchedSendResult(AwaitedSendStatus.RADIO_REJECTED)
         val blockFailure = IllegalArgumentException("settings write failed")
 
@@ -1384,15 +1391,15 @@ class RadioControllerImplTest {
             listOf(editSettingsCommitFailureMessage(AwaitedSendStatus.RADIO_REJECTED, dispatched = true)),
             failure.suppressedExceptions.map(Throwable::message),
         )
-        verifySuspend(exactly(1)) { commandSender.sendAdminAwait(any(), any(), any(), any()) }
-        verifySuspend(exactly(1)) { commandSender.sendAdminAwaitResult(any(), any(), any(), any()) }
+        verifySuspend(exactly(1)) { commandSender.sendAdminAwaitForConnection(any(), any(), any(), any(), any()) }
+        verifySuspend(exactly(1)) { commandSender.sendAdminAwaitResultForConnection(any(), any(), any(), any(), any()) }
     }
 
     @Test
     fun editSettingsSuppressesDistinctCommitFailureWithSameSignature() = runTest {
         val controller = createController(scope = backgroundScope, myNodeNum = 1234)
-        everySuspend { commandSender.sendAdminAwait(any(), any(), any(), any()) } returns true
-        everySuspend { commandSender.sendAdminAwaitResult(any(), any(), any(), any()) } throws
+        everySuspend { commandSender.sendAdminAwaitForConnection(any(), any(), any(), any(), any()) } returns true
+        everySuspend { commandSender.sendAdminAwaitResultForConnection(any(), any(), any(), any(), any()) } throws
             IllegalStateException("same failure")
         val blockFailure = IllegalStateException("same failure")
 
@@ -1411,8 +1418,9 @@ class RadioControllerImplTest {
                 "outer coroutine recovery wrapper",
                 IllegalStateException("recovered settings write failure", blockFailure),
             )
-        everySuspend { commandSender.sendAdminAwait(any(), any(), any(), any()) } returns true
-        everySuspend { commandSender.sendAdminAwaitResult(any(), any(), any(), any()) } throws recoveredBlockFailure
+        everySuspend { commandSender.sendAdminAwaitForConnection(any(), any(), any(), any(), any()) } returns true
+        everySuspend { commandSender.sendAdminAwaitResultForConnection(any(), any(), any(), any(), any()) } throws
+            recoveredBlockFailure
 
         val failure = assertFailsWith<IllegalStateException> { controller.editLocalSettings { throw blockFailure } }
 
@@ -1430,7 +1438,7 @@ class RadioControllerImplTest {
 
         controller.editLocalSettings {}
 
-        verifySuspend(exactly(1)) { commandSender.sendAdminAwaitResult(any(), any(), any(), any()) }
+        verifySuspend(exactly(1)) { commandSender.sendAdminAwaitResultForConnection(any(), any(), any(), any(), any()) }
     }
 
     @Test
@@ -1446,7 +1454,7 @@ class RadioControllerImplTest {
         controller.editLocalSettings {}
 
         assertEquals(ConnectionState.Connected, stateAtCommitReturn)
-        verifySuspend(exactly(1)) { commandSender.sendAdminAwaitResult(any(), any(), any(), any()) }
+        verifySuspend(exactly(1)) { commandSender.sendAdminAwaitResultForConnection(any(), any(), any(), any(), any()) }
         assertEquals(ConnectionState.Disconnected, serviceRepository.connectionState.value)
     }
 
@@ -1463,7 +1471,7 @@ class RadioControllerImplTest {
         controller.editLocalSettings {}
 
         assertEquals(ConnectionState.Connected, serviceRepository.connectionState.value)
-        verifySuspend(exactly(1)) { commandSender.sendAdminAwaitResult(any(), any(), any(), any()) }
+        verifySuspend(exactly(1)) { commandSender.sendAdminAwaitResultForConnection(any(), any(), any(), any(), any()) }
     }
 
     @Test
@@ -1526,7 +1534,7 @@ class RadioControllerImplTest {
 
         controller.editLocalSettings {}
 
-        verifySuspend(exactly(1)) { commandSender.sendAdminAwaitResult(any(), any(), any(), any()) }
+        verifySuspend(exactly(1)) { commandSender.sendAdminAwaitResultForConnection(any(), any(), any(), any(), any()) }
     }
 
     @Test
@@ -1557,7 +1565,7 @@ class RadioControllerImplTest {
             departuresAfterSleep > departuresAtCommit,
             "DeviceSleep must publish a departure before the commit result is evaluated",
         )
-        verifySuspend(exactly(1)) { commandSender.sendAdminAwaitResult(any(), any(), any(), any()) }
+        verifySuspend(exactly(1)) { commandSender.sendAdminAwaitResultForConnection(any(), any(), any(), any(), any()) }
     }
 
     @Test
@@ -1571,7 +1579,7 @@ class RadioControllerImplTest {
         controller.editLocalSettings {}
 
         assertEquals(ConnectionState.Connecting, serviceRepository.connectionState.value)
-        verifySuspend(exactly(1)) { commandSender.sendAdminAwaitResult(any(), any(), any(), any()) }
+        verifySuspend(exactly(1)) { commandSender.sendAdminAwaitResultForConnection(any(), any(), any(), any(), any()) }
     }
 
     @Test
@@ -1588,7 +1596,7 @@ class RadioControllerImplTest {
         controller.editLocalSettings {}
 
         assertEquals(ConnectionState.Disconnected, serviceRepository.connectionState.value)
-        verifySuspend(exactly(1)) { commandSender.sendAdminAwaitResult(any(), any(), any(), any()) }
+        verifySuspend(exactly(1)) { commandSender.sendAdminAwaitResultForConnection(any(), any(), any(), any(), any()) }
     }
 
     @Test
@@ -1651,15 +1659,16 @@ class RadioControllerImplTest {
 
         assertFailsWith<LocalNodeUnavailableException> { controller.editLocalSettings {} }
 
-        verifySuspend(exactly(0)) { commandSender.sendAdminAwait(any(), any(), any(), any()) }
-        verifySuspend(exactly(0)) { commandSender.sendAdminAwaitResult(any(), any(), any(), any()) }
+        verifySuspend(exactly(0)) { commandSender.sendAdminAwaitForConnection(any(), any(), any(), any(), any()) }
+        verifySuspend(exactly(0)) { commandSender.sendAdminAwaitResultForConnection(any(), any(), any(), any(), any()) }
     }
 
     @Test
     fun editSettingsCommitsWhenCallerIsCancelled() = runTest {
         val controller = createController(scope = backgroundScope, myNodeNum = 1234)
-        everySuspend { commandSender.sendAdminAwait(any(), any(), any(), any()) } returns true
-        everySuspend { commandSender.sendAdminAwaitResult(any(), any(), any(), any()) } returns acceptedSendResult()
+        everySuspend { commandSender.sendAdminAwaitForConnection(any(), any(), any(), any(), any()) } returns true
+        everySuspend { commandSender.sendAdminAwaitResultForConnection(any(), any(), any(), any(), any()) } returns
+            acceptedSendResult()
         val blockStarted = CompletableDeferred<Unit>()
         val keepBlockOpen = CompletableDeferred<Unit>()
 
@@ -1683,8 +1692,8 @@ class RadioControllerImplTest {
 
         assertTrue(job.isCancelled)
         verify(exactly(0)) { nodeManager.handleReceivedUser(any(), any(), any(), any(), any()) }
-        verifySuspend(exactly(1)) { commandSender.sendAdminAwait(any(), any(), any(), any()) }
-        verifySuspend(exactly(1)) { commandSender.sendAdminAwaitResult(any(), any(), any(), any()) }
+        verifySuspend(exactly(1)) { commandSender.sendAdminAwaitForConnection(any(), any(), any(), any(), any()) }
+        verifySuspend(exactly(1)) { commandSender.sendAdminAwaitResultForConnection(any(), any(), any(), any(), any()) }
     }
 
     @Test

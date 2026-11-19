@@ -19,7 +19,6 @@ package org.meshtastic.app.map
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
-import org.meshtastic.app.map.component.MIN_CLUSTER_SIZE
 import org.meshtastic.app.map.model.LiveMapNodes
 import org.meshtastic.app.map.model.NodeClusterItem
 import org.meshtastic.core.common.util.nowSeconds
@@ -28,15 +27,13 @@ import org.meshtastic.core.model.util.TimeConstants
 import org.meshtastic.core.model.util.precisionRadiusMetersOrNull
 import org.meshtastic.feature.map.BaseMapViewModel.MapFilterState
 import org.meshtastic.feature.map.MapNodePolicy
-import org.meshtastic.feature.map.NodeStack
-import org.meshtastic.feature.map.STACK_SPREAD_METERS
 import org.meshtastic.feature.map.stackCoincident
 
 /** What the Google map's node layer draws. [MapViewModel.nodeMarkers] builds one off the main thread per change. */
 data class NodeMarkerSet(
     /**
-     * One per marker. The very list the set before it held, for as long as no marker moved, appeared, left or changed
-     * what it stands for, so the map can tell at a glance that its markers are still right.
+     * One per spot with nodes on it. The very list the set before it held, for as long as no marker moved, appeared,
+     * left or changed what it stands for, so the map can tell at a glance that its markers are still right.
      */
     val items: List<NodeClusterItem>,
     /** Every node on the map by number: the ones [items] are drawn for and the ones stacked under them. */
@@ -60,7 +57,6 @@ internal fun buildNodeMarkerSet(
     nowSeconds: Long,
     ourNodeNum: Int?,
     myNodeNum: Int?,
-    spreadMeters: Double,
     liveNodes: LiveMapNodes,
     previous: NodeMarkerSet? = null,
 ): NodeMarkerSet {
@@ -68,7 +64,7 @@ internal fun buildNodeMarkerSet(
     // anchor a group on the first node they meet, so an order that changes with every packet regroups the map with
     // every packet.
     val visible = MapNodePolicy.visibleNodes(nodes, filterState, nowSeconds, ourNodeNum).sortedBy { it.num }
-    val items = buildNodeClusterItems(visible, myNodeNum, spreadMeters, liveNodes)
+    val items = buildNodeClusterItems(visible, myNodeNum, liveNodes)
     return NodeMarkerSet(
         items = previous?.items?.takeIf { it == items } ?: items,
         nodes = visible.associateBy { it.num },
@@ -76,18 +72,15 @@ internal fun buildNodeMarkerSet(
 }
 
 /**
- * One item per marker: nodes within [spreadMeters] of each other share one, unless there are enough of them for the
- * clustering to gather into a bubble.
+ * One item per spot: nodes within a few meters of each other share one, since no zoom level separates them.
+ *
+ * Chips that merely sit close at the current zoom are not merged here. The map's clustering does that, once it has
+ * decided its bubbles: see [org.meshtastic.app.map.component.ChipMergingAlgorithm].
  */
-internal fun buildNodeClusterItems(
-    nodes: List<Node>,
-    myNodeNum: Int?,
-    spreadMeters: Double = STACK_SPREAD_METERS,
-    liveNodes: LiveMapNodes,
-): List<NodeClusterItem> {
-    fun itemFor(stack: NodeStack): NodeClusterItem {
+internal fun buildNodeClusterItems(nodes: List<Node>, myNodeNum: Int?, liveNodes: LiveMapNodes): List<NodeClusterItem> =
+    stackCoincident(nodes, myNodeNum).map { stack ->
         val node = stack.top
-        return NodeClusterItem(
+        NodeClusterItem(
             nodeNum = node.num,
             nodePosition = node.position.toLatLng(),
             priority = MapNodePolicy.priorityOf(node, myNodeNum),
@@ -96,13 +89,6 @@ internal fun buildNodeClusterItems(
             liveNodes = liveNodes,
         )
     }
-    return stackCoincident(nodes, myNodeNum, spreadMeters)
-        .flatMap { merged ->
-            // Bubbles win: a group big enough to bubble stays as its close stacks, for the clustering to gather.
-            if (merged.count >= MIN_CLUSTER_SIZE) stackCoincident(merged.members, myNodeNum) else listOf(merged)
-        }
-        .map(::itemFor)
-}
 
 /** The current minute, again at each minute boundary: when the map's "heard ago" texts and time filters move on. */
 internal fun relativeTimeBuckets(now: () -> Long = { nowSeconds }): Flow<Long> = flow {

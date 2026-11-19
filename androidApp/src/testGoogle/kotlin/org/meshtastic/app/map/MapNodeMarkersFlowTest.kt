@@ -126,34 +126,19 @@ class MapNodeMarkersFlowTest {
     }
 
     @Test
-    fun `zooming in regroups nodes that shared a chip`() = withMap { nodeRepository, viewModel ->
-        // 11 m apart: one merged chip from the default zoom, a chip each from close in.
+    fun `moving or zooming the camera does not rebuild the markers`() = withMap { nodeRepository, viewModel ->
+        // Which chips merge at a zoom is the clustering's to decide, so the items it is given do not follow the camera.
         nodeRepository.setNodes(testNodes(NODE_COUNT))
         runCurrent()
-        assertEquals(1, viewModel.nodeMarkers.value.items.size)
-        assertEquals(NODE_COUNT, viewModel.nodeMarkers.value.items.single().stackMemberNums.size)
+        val before = viewModel.nodeMarkers.value
+        assertEquals(NODE_COUNT, before.items.size)
 
         viewModel.cameraPositionState.position = CameraPosition.fromLatLngZoom(LatLng(21.0, -157.0), CLOSE_ZOOM)
         Snapshot.sendApplyNotifications()
         runCurrent()
 
-        assertEquals(NODE_COUNT, viewModel.nodeMarkers.value.items.size)
+        assertSame(before, viewModel.nodeMarkers.value)
     }
-
-    @Test
-    fun `a camera move within one zoom level and degree does not rebuild the markers`() =
-        withMap { nodeRepository, viewModel ->
-            nodeRepository.setNodes(testNodes(NODE_COUNT))
-            runCurrent()
-            val before = viewModel.nodeMarkers.value
-
-            viewModel.cameraPositionState.position =
-                CameraPosition.fromLatLngZoom(LatLng(0.2, 3.0), DEFAULT_ZOOM + 0.4f)
-            Snapshot.sendApplyNotifications()
-            runCurrent()
-
-            assertSame(before, viewModel.nodeMarkers.value)
-        }
 
     /** Runs [block] against a view model whose markers are being collected, as the map screen collects them. */
     private fun withMap(block: suspend TestScope.(FakeNodeRepository, MapViewModel) -> Unit) = runTest {
@@ -243,7 +228,6 @@ class MapNodeMarkersFlowTest {
 
     private companion object {
         const val NODE_COUNT = 5
-        const val DEFAULT_ZOOM = 7f
         const val CLOSE_ZOOM = 21f
         const val MOVED_LATITUDE = 21.5
     }

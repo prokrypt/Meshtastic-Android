@@ -29,7 +29,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -41,6 +40,7 @@ import com.google.maps.android.clustering.Cluster
 import com.google.maps.android.clustering.ClusterManager
 import com.google.maps.android.clustering.algo.NonHierarchicalDistanceBasedAlgorithm
 import com.google.maps.android.clustering.algo.NonHierarchicalViewBasedAlgorithm
+import com.google.maps.android.clustering.algo.PreCachingAlgorithmDecorator
 import com.google.maps.android.clustering.algo.ScreenBasedAlgorithmAdapter
 import com.google.maps.android.clustering.view.DefaultClusterRenderer
 import com.google.maps.android.compose.Circle
@@ -222,28 +222,34 @@ private fun NodeClusterLayer(
                 renderer.useCompactNumberFormatting = true
                 manager.cluster()
             }
-            // Only swap on a threshold crossing; otherwise just resize in place - replacing re-migrates every item.
-            val algorithm = manager.algorithm
+            // The clustering decides the bubbles and ChipMergingAlgorithm merges the chips it leaves out. Only the
+            // clustering under it is swapped, and only on a threshold crossing: replacing re-migrates every item.
+            val merging = manager.algorithm as? ChipMergingAlgorithm
+            val clustering = merging?.delegate
             val needsViewBasedAlgorithm = items.size > VIEW_BASED_ALGORITHM_NODE_THRESHOLD
             when {
-                needsViewBasedAlgorithm && algorithm is NonHierarchicalViewBasedAlgorithm<*> ->
-                    algorithm.updateViewSize(configuration.screenWidthDp, configuration.screenHeightDp)
+                needsViewBasedAlgorithm && clustering is NonHierarchicalViewBasedAlgorithm<*> ->
+                    clustering.updateViewSize(configuration.screenWidthDp, configuration.screenHeightDp)
 
-                needsViewBasedAlgorithm ->
-                    manager.setAlgorithm(
-                        NonHierarchicalViewBasedAlgorithm(configuration.screenWidthDp, configuration.screenHeightDp),
-                    )
+                needsViewBasedAlgorithm -> {
+                    val viewBased =
+                        NonHierarchicalViewBasedAlgorithm<NodeClusterItem>(
+                            configuration.screenWidthDp,
+                            configuration.screenHeightDp,
+                        )
+                    manager.setAlgorithm(ChipMergingAlgorithm(viewBased))
+                }
 
-                algorithm is NonHierarchicalViewBasedAlgorithm<*> ->
-                    // Kotlin won't resolve setAlgorithm's Algorithm<T> overload for a plain
-                    // NonHierarchicalDistanceBasedAlgorithm; wrap it to force the ScreenBasedAlgorithm<T> overload.
-                    manager.setAlgorithm(
-                        ScreenBasedAlgorithmAdapter(NonHierarchicalDistanceBasedAlgorithm<NodeClusterItem>()),
-                    )
+                merging == null || clustering is NonHierarchicalViewBasedAlgorithm<*> -> {
+                    // The library's own default: distance based, with the zoom levels either side kept ready.
+                    val distanceBased =
+                        PreCachingAlgorithmDecorator(NonHierarchicalDistanceBasedAlgorithm<NodeClusterItem>())
+                    manager.setAlgorithm(ChipMergingAlgorithm(ScreenBasedAlgorithmAdapter(distanceBased)))
+                }
             }
         },
     )
-    clusterManager?.let { MarkerTitleRefresh(clusterManager = it, items = items) }
+    clusterManager?.let { MarkerTitleRefresh(clusterManager = it) }
 }
 
 /**
@@ -253,15 +259,15 @@ private fun NodeClusterLayer(
  * else would touch it: a node's item no longer changes just because a minute went by.
  */
 @Composable
-private fun MarkerTitleRefresh(clusterManager: ClusterManager<NodeClusterItem>, items: List<NodeClusterItem>) {
+private fun MarkerTitleRefresh(clusterManager: ClusterManager<NodeClusterItem>) {
     val minute = rememberRelativeTimeBucket()
-    val currentItems by rememberUpdatedState(items)
     LaunchedEffect(clusterManager, minute) {
         @Suppress("UNCHECKED_CAST")
         val renderer = clusterManager.renderer as? DefaultClusterRenderer<NodeClusterItem> ?: return@LaunchedEffect
-        currentItems.forEachIndexed { index, item ->
-            // Only a node drawn as its own chip has a marker; one inside a bubble has none.
-            renderer.getMarker(item)?.let { marker ->
+        // The chips now on the map, which are not the items the map was given: nearby ones are merged into one.
+        clusterManager.markerCollection.getMarkers().toList().forEachIndexed { index, marker ->
+            // Null for a marker removed since the list was copied.
+            renderer.getClusterItem(marker)?.let { item ->
                 val title = item.title
                 if (marker.title != title) marker.title = title
             }

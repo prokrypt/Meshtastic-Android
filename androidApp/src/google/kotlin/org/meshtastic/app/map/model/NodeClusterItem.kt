@@ -37,7 +37,7 @@ class NodeClusterItem(
     val priority: Int,
     /** Radius of the node's precision circle, or null when its position is reported in full. */
     val precisionMeters: Double?,
-    /** Every node at this spot, this one included, when more than one is; empty otherwise. */
+    /** Every node this marker stands for, this one included, when more than one is; empty otherwise. */
     val stackMemberNums: List<Int> = emptyList(),
     private val liveNodes: LiveMapNodes,
 ) : ClusterItem {
@@ -53,6 +53,20 @@ class NodeClusterItem(
 
     override val zIndex: Float
         get() = priority.toFloat()
+
+    /**
+     * This item standing for every node in [members] as well as its own: one chip where theirs would overlap.
+     *
+     * @param members the items merged into one, this one among them.
+     */
+    fun mergedWith(members: List<NodeClusterItem>): NodeClusterItem = NodeClusterItem(
+        nodeNum = nodeNum,
+        nodePosition = nodePosition,
+        priority = priority,
+        precisionMeters = precisionMeters,
+        stackMemberNums = members.flatMap { it.stackMemberNums.ifEmpty { listOf(it.nodeNum) } },
+        liveNodes = liveNodes,
+    )
 
     override fun equals(other: Any?): Boolean = this === other ||
         (

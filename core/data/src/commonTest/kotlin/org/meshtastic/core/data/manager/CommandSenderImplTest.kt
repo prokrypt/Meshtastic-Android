@@ -247,6 +247,7 @@ class CommandSenderImplTest {
         val contacts = mutableListOf<ToRadio>()
         every { packetHandler.sendToRadio(capture(contacts)) } returns Unit
         everySuspend { packetHandler.sendToRadio(any<MeshPacket>()) } returns true
+        everySuspend { packetHandler.sendToRadioForConnection(any(), CONNECTION_VERSION) } returns true
 
         commandSender.requestTelemetry(requestId = 0, destNum = DEST_NODE, typeValue = 0)
         commandSender.sendAdmin(DEST_NODE) { AdminMessage.Builder().also { wb -> wb.get_owner_request = true }.build() }
